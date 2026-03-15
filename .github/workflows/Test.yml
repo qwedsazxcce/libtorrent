@@ -1,224 +1,49 @@
-name: Build libtorrent-rasterbar 2.0.12 (Full Feature Static Library)
-
-on:
-  push:
-    branches:
-      - RC_2_0
-    paths:
-      - '.github/workflows/Test.yml'
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: windows-2022
-    defaults:
-      run:
-        shell: cmd
-    env:
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_TOOLCHAIN: ${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
-      VCPKG_TARGET_TRIPLET: x64-windows-static
-      LIBTORRENT_VERSION: 2.0.12
-      WORK_DIR: ${{ github.workspace }}\libtorrent-work
-
-    steps:
-      - name: Show environment info
-        run: |
-          echo "=== Check CMake version ==="
-          cmake --version
-          echo.
-          echo "=== Check MSBuild version ==="
-          msbuild -version
-          echo.
-          echo "=== Current working directory ==="
-          cd
-          echo.
-          echo "=== GitHub workspace ==="
-          echo %GITHUB_WORKSPACE%
-
-      - name: Configure vcpkg cache
-        uses: actions/cache@v4
-        id: vcpkg-cache
-        with:
-          path: |
-            ${{ env.VCPKG_ROOT }}\downloads
-            ${{ env.VCPKG_ROOT }}\installed
-          key: ${{ runner.os }}-vcpkg-${{ env.VCPKG_TARGET_TRIPLET }}-boost-20260304
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-${{ env.VCPKG_TARGET_TRIPLET }}-
-
-      - name: Install vcpkg and Boost dependencies
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        run: |
-          git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
-          cd /d "%VCPKG_ROOT%"
-          git checkout 2026.03.04
-          
-          call bootstrap-vcpkg.bat -disableMetrics
-          
-          :: Configure GitHub mirror to fix 502 error
-          set VCPKG_ASSET_SOURCES=x-azurl,https://mirror.ghproxy.com/https://github.com/,blocking
-          
-          :: Install only required Boost components for full-featured libtorrent
-          echo "=== Installing required Boost components ==="
-          .\vcpkg install ^
-            boost-asio:%VCPKG_TARGET_TRIPLET% ^
-            boost-chrono:%VCPKG_TARGET_TRIPLET% ^
-            boost-system:%VCPKG_TARGET_TRIPLET% ^
-            boost-thread:%VCPKG_TARGET_TRIPLET% ^
-            boost-random:%VCPKG_TARGET_TRIPLET% ^
-            boost-iterator:%VCPKG_TARGET_TRIPLET% ^
-            boost-core:%VCPKG_TARGET_TRIPLET% ^
-            boost-config:%VCPKG_TARGET_TRIPLET% ^
-            boost-utility:%VCPKG_TARGET_TRIPLET% ^
-            boost-regex:%VCPKG_TARGET_TRIPLET% ^
-            boost-filesystem:%VCPKG_TARGET_TRIPLET%
-          
-          if %errorlevel% neq 0 (
-              echo Error: vcpkg dependency installation failed!
-              exit /b 1
-          )
-          echo "=== Boost components installed successfully ==="
-
-      - name: Create workspace and download libtorrent source
+      - name: Configure CMake (Full Feature Static Library)
         shell: powershell
         run: |
-          # Create working directory
-          New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
-          Set-Location -Path $env:WORK_DIR
+          $SRC_DIR = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION"
+          $BUILD_DIR = "$SRC_DIR\build"
           
-          # 定义多个镜像源（按优先级）
-          $mirrors = @(
-            "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz",  # 官方源
-            "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz",  # ghproxy 镜像
-            "https://hub.gitmirror.com/?url=https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"  # gitmirror 镜像
-          )
+          New-Item -ItemType Directory -Force -Path $BUILD_DIR | Out-Null
+          Set-Location $BUILD_DIR
           
-          $output = "libtorrent.tar.gz"
-          $downloaded = $false
+          Write-Host "=== Configuring CMake for full feature static library ==="
+          cmake .. -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_TOOLCHAIN" `
+            -DVCPKG_TARGET_TRIPLET="$env:VCPKG_TARGET_TRIPLET" `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.20 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DTORRENT_BUILD_SHARED_LIBS=OFF `
+            -DTORRENT_USE_STATIC_RUNTIME=ON `
+            -DTORRENT_BUILD_TESTS=OFF `
+            -DTORRENT_BUILD_EXAMPLES=OFF `
+            -DBoost_USE_STATIC_LIBS=ON `
+            -DBoost_USE_STATIC_RUNTIME=ON `
+            # ===================== 全功能核心参数（显式开启所有功能） =====================
+            -DTORRENT_USE_LPTP=ON `
+            -DTORRENT_USE_DHT=ON `
+            -DTORRENT_USE_ENCRYPTION=ON `
+            -DTORRENT_USE_IPV6=ON `
+            -DTORRENT_USE_UPNP=ON `
+            -DTORRENT_USE_WEBSEEDS=ON `
+            -DTORRENT_USE_SUPER_SEEDING=ON `
+            -DTORRENT_ENABLE_LOGGING=ON `
+            -DTORRENT_DISK_STATS=ON `
+            -DTORRENT_BANDWIDTH_MANAGEMENT=ON `
+            -DTORRENT_USE_RSS=ON `
+            -DTORRENT_USE_METADATA_EXTENSIONS=ON `
+            -DTORRENT_USE_GEO_IP=ON `
+            -DTORRENT_USE_PROXY=ON `
+            -DTORRENT_USE_ASYNC_IO=ON `
+            -DTORRENT_USE_DISK_CACHE=ON `
+            -DTORRENT_USE_INVARIANT_CHECKS=OFF `
+            -DTORRENT_OPTIMIZE_FOR_SIZE=OFF `
+            -DTORRENT_USE_ASSERTS=OFF
           
-          foreach ($url in $mirrors) {
-              Write-Host "Trying mirror: $url"
-              $retryCount = 3
-              while ($retryCount -gt 0 -and !$downloaded) {
-                  try {
-                      Write-Host "Download attempt: $(4 - $retryCount)"
-                      Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing -TimeoutSec 60
-                      $downloaded = $true
-                      Write-Host "Download succeeded from $url"
-                      break
-                  } catch {
-                      Write-Host "Download failed, remaining retries: $($retryCount - 1)"
-                      $retryCount--
-                      Start-Sleep -Seconds 5
-                  }
-              }
-              if ($downloaded) { break }
-          }
-          
-          if (!$downloaded) {
-              Write-Error "Error: All mirrors and retries failed!"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "CMake configuration failed!"
               exit 1
           }
-          
-          # Extract source
-          Write-Host "=== Extracting source files ==="
-          tar -xzf libtorrent.tar.gz
-          
-          # Show extracted directory
-          Write-Host "=== Directory after extraction ==="
-          Get-ChildItem
-
-      - name: Configure CMake (Full Feature Static Library)
-        run: |
-          set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
-          set BUILD_DIR=%SRC_DIR%\build
-          
-          mkdir "%BUILD_DIR%"
-          cd /d "%BUILD_DIR%"
-          
-          echo "=== Configuring CMake for full feature static library ==="
-          cmake .. -G "Visual Studio 17 2022" -A x64 ^
-          -DCMAKE_TOOLCHAIN_FILE="%VCPKG_TOOLCHAIN%" ^
-          -DVCPKG_TARGET_TRIPLET=%VCPKG_TARGET_TRIPLET% ^
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.20 ^
-          -DCMAKE_BUILD_TYPE=Release ^
-          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
-          -DBUILD_SHARED_LIBS=OFF ^
-          -DTORRENT_BUILD_SHARED_LIBS=OFF ^
-          -DTORRENT_USE_STATIC_RUNTIME=ON ^
-          -DTORRENT_BUILD_TESTS=OFF ^
-          -DTORRENT_BUILD_EXAMPLES=OFF ^
-          -DBoost_USE_STATIC_LIBS=ON ^
-          -DBoost_USE_STATIC_RUNTIME=ON ^
-          # ===================== 全功能核心参数（显式开启所有功能） =====================
-          -DTORRENT_USE_LPTP=ON ^                # LT_PEX (Peer Exchange)
-          -DTORRENT_USE_DHT=ON ^                 # DHT Network
-          -DTORRENT_USE_ENCRYPTION=ON ^          # Protocol Encryption (RC4/Plaintext)
-          -DTORRENT_USE_IPV6=ON ^                # IPv6 Support
-          -DTORRENT_USE_UPNP=ON ^                # UPnP/NAT-PMP Port Mapping
-          -DTORRENT_USE_WEBSEEDS=ON ^            # WebSeed (HTTP/FTP Seeds)
-          -DTORRENT_USE_SUPER_SEEDING=ON ^       # Super Seeding Mode
-          -DTORRENT_ENABLE_LOGGING=ON ^          # Logging Functionality
-          -DTORRENT_DISK_STATS=ON ^              # Disk Statistics
-          -DTORRENT_BANDWIDTH_MANAGEMENT=ON ^    # Bandwidth Control
-          -DTORRENT_USE_RSS=ON ^                 # RSS Subscription
-          -DTORRENT_USE_METADATA_EXTENSIONS=ON ^ # Metadata Extensions
-          -DTORRENT_USE_GEO_IP=ON ^              # GeoIP Support
-          -DTORRENT_USE_PROXY=ON ^               # Proxy Support (HTTP/SOCKS)
-          -DTORRENT_USE_ASYNC_IO=ON ^            # Asynchronous Disk IO
-          -DTORRENT_USE_DISK_CACHE=ON ^          # Disk Cache
-          -DTORRENT_USE_INVARIANT_CHECKS=OFF ^   # Disable debug checks (Release mode)
-          -DTORRENT_OPTIMIZE_FOR_SIZE=OFF ^      # Disable size optimization (prioritize performance)
-          -DTORRENT_USE_ASSERTS=OFF ^            # Disable asserts (Release mode)
-          
-          if %errorlevel% neq 0 (
-              echo Error: CMake configuration failed!
-              exit /b 1
-          )
-          echo "=== CMake configured successfully ==="
-
-      - name: Build Release x64 (Full Feature)
-        run: |
-          set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
-          cd /d "%BUILD_DIR%"
-          
-          echo "=== Building Release x64 (Multi-core compilation) ==="
-          msbuild libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /p:UseMultiToolTask=true /p:EnforceProcessCountAcrossBuilds=true /p:WholeProgramOptimization=true
-          
-          if %errorlevel% neq 0 (
-              echo Error: Build failed!
-              exit /b 1
-          )
-          echo "=== Build completed successfully ==="
-
-      - name: Collect build artifacts
-        run: |
-          set DIST_DIR=%WORK_DIR%\dist
-          mkdir "%DIST_DIR%"
-          mkdir "%DIST_DIR%\include"
-          mkdir "%DIST_DIR%\lib"
-          
-          :: Copy libtorrent headers
-          echo "=== Copying libtorrent headers ==="
-          xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include"
-          
-          :: Copy static library (full feature)
-          echo "=== Copying full feature static library ==="
-          copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
-          
-          :: Copy Boost headers/libs (for direct use)
-          echo "=== Copying Boost dependencies ==="
-          xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\include" "%DIST_DIR%\include"
-          xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\lib" "%DIST_DIR%\lib"
-          
-          echo.
-          echo "=== Final artifact directory structure ==="
-          dir /s "%DIST_DIR%"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: libtorrent-rasterbar-${{ env.LIBTORRENT_VERSION }}-full-feature-static-x64-windows
-          path: ${{ env.WORK_DIR }}\dist\
-          retention-days: 30
+          Write-Host "=== CMake configured successfully ==="
