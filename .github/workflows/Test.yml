@@ -14,6 +14,7 @@ jobs:
       LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\build-workspace
       VCPKG_TAG: 2026.03.04
+      VCPKG_TRIPLET: x64-windows-static
 
     steps:
       - name: 1. Checkout and Bootstrap vcpkg
@@ -31,47 +32,35 @@ jobs:
           .\vcpkg.exe version
           Write-Host "vcpkg initialized successfully"
 
-      - name: 2. Create Workspace and vcpkg.json
+      - name: 2. Install Boost Dependencies (Classic Mode)
         shell: powershell
         run: |
-          New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
-          Set-Location $env:WORK_DIR
-
-          # 修复：移除了 builtin-baseline，因为我们已经锁定了 vcpkg 版本 (git tag)
-          $manifestContent = @{
-            name = "libtorrent-build"
-            version = "1.0.0"
-            dependencies = @(
-              "boost-asio", "boost-chrono", "boost-system", 
-              "boost-thread", "boost-random", "boost-regex", 
-              "boost-filesystem"
-            )
-          }
-          
-          $manifestContent | ConvertTo-Json -Depth 10 | Out-File -FilePath "vcpkg.json" -Encoding utf8
-          Write-Host "vcpkg.json created at: $env:WORK_DIR"
-          Get-Content "vcpkg.json"
-
-      - name: 3. Install Boost Dependencies
-        shell: powershell
-        run: |
-          Set-Location $env:WORK_DIR
+          Set-Location $env:VCPKG_ROOT
           
           $env:VCPKG_FEATURE_FLAGS = "binaries"
           $env:VCPKG_BINARY_SOURCES = "clear;nuget,https://aka.ms/vcpkg-default-binarysource,read"
           $env:VCPKG_DISABLE_METRICS = "1"
 
-          Write-Host "Installing Boost (x64-windows-static)..."
-          & $env:VCPKG_ROOT\vcpkg.exe install --x-manifest-root=$env:WORK_DIR --triplet=x64-windows-static
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Boost installation failed"
+          Write-Host "Installing Boost libraries..."
+          # 直接列出需要的库，带 triplet 后缀
+          $boostLibs = @(
+            "boost-asio", "boost-chrono", "boost-system", 
+            "boost-thread", "boost-random", "boost-regex", 
+            "boost-filesystem"
+          )
+          
+          foreach ($lib in $boostLibs) {
+            Write-Host "Installing $lib..."
+            & .\vcpkg.exe install "$lib`:$env:VCPKG_TRIPLET"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install $lib" }
           }
-          Write-Host "Boost installed successfully"
+          
+          Write-Host "All Boost dependencies installed successfully"
 
-      - name: 4. Download and Extract libtorrent Source
+      - name: 3. Download and Extract libtorrent Source
         shell: powershell
         run: |
+          New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
           $fileName = "libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           $url = "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/$fileName"
@@ -84,7 +73,7 @@ jobs:
           
           Write-Host "Source code ready"
 
-      - name: 5. Configure CMake
+      - name: 4. Configure CMake
         shell: powershell
         run: |
           $srcDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION"
@@ -93,12 +82,13 @@ jobs:
           New-Item -Path $buildDir -ItemType Directory -Force | Out-Null
           Set-Location $buildDir
 
+          # 修复 CMP0167 警告：强制设置 CMake 策略，让 vcpkg 接管 Boost 查找
           $cmakeArgs = @(
             "..",
             "-G", "Visual Studio 17 2022",
             "-A", "x64",
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
-            "-DVCPKG_TARGET_TRIPLET=x64-windows-static",
+            "-DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
             "-DBUILD_SHARED_LIBS=OFF",
@@ -116,7 +106,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
           Write-Host "CMake configured successfully"
 
-      - name: 6. Build libtorrent
+      - name: 5. Build libtorrent
         shell: powershell
         run: |
           $buildDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION\build"
@@ -133,12 +123,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Build failed" }
           Write-Host "Build succeeded"
 
-      - name: 7. Collect Artifacts
+      - name: 6. Collect Artifacts
         shell: powershell
         run: |
           $distDir = "$env:WORK_DIR\dist"
           $srcDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION"
-          $vcpkgInstalled = "$env:VCPKG_ROOT\installed\x64-windows-static"
+          $vcpkgInstalled = "$env:VCPKG_ROOT\installed\$env:VCPKG_TRIPLET"
           
           New-Item -Path "$distDir\include", "$distDir\lib" -ItemType Directory -Force | Out-Null
           
@@ -152,7 +142,7 @@ jobs:
           Write-Host "Artifacts collected. Directory structure:"
           Get-ChildItem $distDir -Recurse | Select-Object FullName
 
-      - name: 8. Upload Artifact
+      - name: 7. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: libtorrent-2.0.12-full-static-x64-windows
