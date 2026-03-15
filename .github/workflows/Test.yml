@@ -13,7 +13,7 @@ jobs:
     runs-on: windows-2022
     defaults:
       run:
-        shell: cmd
+        shell: cmd  # 全局默认 cmd，仅下载步骤单独切换
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_TOOLCHAIN: ${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
@@ -77,47 +77,45 @@ jobs:
           )
           echo vcpkg 依赖安装成功！
 
+      # 核心修复：该步骤单独使用 powershell shell，彻底避开 cmd 解析问题
       - name: 创建工作目录并下载 libtorrent 源码
+        shell: powershell
         run: |
-          :: 创建工作目录
-          mkdir "%WORK_DIR%"
-          cd /d "%WORK_DIR%"
+          # 创建工作目录
+          New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
+          Set-Location -Path $env:WORK_DIR
           
-          :: 修复核心：PowerShell 命令用正确转义，避免 cmd 解析内部语法
-          echo "正在下载 libtorrent v%LIBTORRENT_VERSION% 源码（带重试）..."
-          powershell -Command "& {
-              $url = 'https://github.com/arvidn/libtorrent/releases/download/v${env:LIBTORRENT_VERSION}/libtorrent-rasterbar-${env:LIBTORRENT_VERSION}.tar.gz';
-              $output = 'libtorrent.tar.gz';
-              $retryCount = 3;
-              $success = $false;
-              while ($retryCount -gt 0 -and !$success) {
-                  try {
-                      Write-Host '下载尝试: ' (4 - $retryCount);
-                      Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing -TimeoutSec 30;
-                      $success = $true;
-                  } catch {
-                      Write-Host '下载失败，剩余重试次数: ' ($retryCount - 1);
-                      $retryCount--;
-                      Start-Sleep -Seconds 5;
-                  }
+          # 下载源码（带重试机制）
+          Write-Host "正在下载 libtorrent v$env:LIBTORRENT_VERSION 源码（带重试）..."
+          $url = "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
+          $output = "libtorrent.tar.gz"
+          $retryCount = 3
+          $success = $false
+          
+          while ($retryCount -gt 0 -and !$success) {
+              try {
+                  Write-Host "下载尝试: $(4 - $retryCount)"
+                  Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing -TimeoutSec 30
+                  $success = $true
+              } catch {
+                  Write-Host "下载失败，剩余重试次数: $($retryCount - 1)"
+                  $retryCount--
+                  Start-Sleep -Seconds 5
               }
-              if (!$success) {
-                  Write-Error '所有重试均失败！';
-                  exit 1;
-              }
-          }"
+          }
           
-          if %errorlevel% neq 0 (
-              echo 源码下载失败！
-              exit /b 1
-          )
+          if (!$success) {
+              Write-Error "所有重试均失败！无法下载源码"
+              exit 1
+          }
           
-          :: 解压源码
-          echo "正在解压源码..."
+          # 解压源码
+          Write-Host "正在解压源码..."
           tar -xzf libtorrent.tar.gz
           
-          echo "=== 解压后的目录 ==="
-          dir
+          # 显示解压后的目录
+          Write-Host "=== 解压后的目录 ==="
+          Get-ChildItem
 
       - name: 配置 CMake
         run: |
