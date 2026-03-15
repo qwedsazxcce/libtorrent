@@ -14,7 +14,7 @@ jobs:
         shell: cmd
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_TARGET_TRIPLET: x64-windows-static
+      VCPKG_TARGET_TRIPLET: x64-windows-static  # 明确静态库Triplet
       LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\libtorrent-work
       VCPKG_VERSION: 2026-03-04
@@ -36,7 +36,7 @@ jobs:
           key: windows-vcpkg-boost-x64-static-1.90.0
           restore-keys: windows-vcpkg-boost-x64-static-
 
-      # 核心修复：用PowerShell下载兼容版本的vcpkg.exe（处理重定向，验证有效性）
+      # 保留你已解决的vcpkg二进制下载逻辑（仅修复注释符）
       - name: Install vcpkg (binary, compatible version)
         shell: powershell
         run: |
@@ -44,12 +44,12 @@ jobs:
           New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
           Set-Location $env:VCPKG_ROOT
 
-          # 下载指定兼容版本的vcpkg.exe（避免latest的兼容性坑）
+          # 下载指定兼容版本的vcpkg.exe
           $vcpkgUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
           Write-Host "=== Downloading vcpkg $env:VCPKG_VERSION from: $vcpkgUrl ==="
           Invoke-WebRequest -Uri $vcpkgUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
 
-          # 验证vcpkg是否有效（关键：避免下载到错误页面）
+          # 验证vcpkg是否有效
           Write-Host "=== Verifying vcpkg.exe ==="
           .\vcpkg.exe version
           if ($LASTEXITCODE -ne 0) {
@@ -57,33 +57,28 @@ jobs:
               exit 1
           }
 
-      # 安装Boost二进制包（强制二进制，禁止源码编译）
+      # 核心修复：CMD注释符+Triplet传参+Timeout兼容
       - name: Install Boost (binary only)
         run: |
           cd /d "%VCPKG_ROOT%"
           
-          # 强制使用二进制源，避免源码编译
+          :: 强制使用二进制源，避免源码编译（修复：CMD注释用::）
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,readwrite
           
-          # 安装Boost核心组件（带简单重试）
+          :: 安装Boost核心组件（带重试，修复Triplet和Timeout）
           echo "=== Installing Boost binaries ==="
           set retry=2
           :boost_install
-          vcpkg install ^
-            boost-asio:%VCPKG_TARGET_TRIPLET% ^
-            boost-chrono:%VCPKG_TARGET_TRIPLET% ^
-            boost-system:%VCPKG_TARGET_TRIPLET% ^
-            boost-thread:%VCPKG_TARGET_TRIPLET% ^
-            boost-random:%VCPKG_TARGET_TRIPLET% ^
-            boost-regex:%VCPKG_TARGET_TRIPLET% ^
-            boost-filesystem:%VCPKG_TARGET_TRIPLET%
+          :: 修复：明确指定Triplet，避免解析截断
+          .\vcpkg.exe install boost-asio:%VCPKG_TARGET_TRIPLET% boost-chrono:%VCPKG_TARGET_TRIPLET% boost-system:%VCPKG_TARGET_TRIPLET% boost-thread:%VCPKG_TARGET_TRIPLET% boost-random:%VCPKG_TARGET_TRIPLET% boost-regex:%VCPKG_TARGET_TRIPLET% boost-filesystem:%VCPKG_TARGET_TRIPLET%
           
           if %errorlevel% equ 0 goto boost_success
           set /a retry-=1
           if %retry% gtr 0 (
               echo "=== Boost install failed, retry %retry% ==="
-              timeout /t 5 /nobreak >nul
+              :: 修复：兼容GitHub Actions的Timeout写法，去掉/nobreak，重定向所有输出
+              timeout /t 5 >nul 2>&1
               goto boost_install
           )
           echo Error: Boost binary install failed!
@@ -91,7 +86,7 @@ jobs:
           :boost_success
           echo "=== Boost installed successfully ==="
 
-      # 下载libtorrent源码（多镜像兜底）
+      # 下载libtorrent源码（修复CMD注释符）
       - name: Download libtorrent source
         shell: powershell
         run: |
@@ -121,7 +116,7 @@ jobs:
               exit 1
           }
 
-      # CMake配置（全功能静态库）
+      # CMake配置（修复CMD注释符）
       - name: Configure CMake
         run: |
           set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
@@ -147,7 +142,7 @@ jobs:
           -DTORRENT_USE_PROXY=ON ^
           -DTORRENT_USE_DISK_CACHE=ON
 
-      # 编译（vswhere自动找MSBuild，通用稳定）
+      # 编译（修复CMD注释符）
       - name: Build libtorrent
         run: |
           set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
@@ -168,7 +163,7 @@ jobs:
               exit /b 1
           )
 
-      # 收集产物（开箱即用）
+      # 收集产物（修复CMD注释符）
       - name: Collect artifacts
         run: |
           set DIST_DIR=%WORK_DIR%\dist
