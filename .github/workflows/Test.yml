@@ -5,7 +5,7 @@ on:
     branches:
       - main  # 仅在推送到 main 分支时触发
     paths:
-      - 'libtorrent/.github/workflows/Test.yml'  # 仅当这个文件变化时触发
+      - '.github/workflows/Test.yml'  # 仅当这个文件变化时触发
   workflow_dispatch:  # 同时保留手动触发
 
 jobs:
