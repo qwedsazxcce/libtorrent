@@ -1,17 +1,17 @@
 name: Build libtorrent-rasterbar 2.0.12 (Full Feature Static Library)
 
 on:
-  workflow_dispatch:  # 支持手动触发
   push:
     branches:
-      - main  # 推送到 main 分支时自动触发（可选）
+      - main  # 推送到 main 分支时自动触发
+  workflow_dispatch:  # 同时保留手动触发
 
 jobs:
   build:
-    runs-on: windows-2022  # 使用 Windows Server 2022 环境（自带 VS2022 BuildTools）
+    runs-on: windows-2022
     defaults:
       run:
-        shell: cmd  # 使用 CMD 执行命令（适配你的习惯）
+        shell: cmd
 
     steps:
       - name: 显示环境信息
@@ -25,39 +25,60 @@ jobs:
           echo "=== 当前工作目录 ==="
           cd
 
+      - name: 安装 vcpkg 并下载 Boost
+        run: |
+          :: 克隆 vcpkg
+          cd /d D:\
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          
+          :: 引导 vcpkg
+          call bootstrap-vcpkg.bat
+          
+          :: 安装 Boost（x64-windows-static 版本，适配静态库）
+          echo "正在安装 Boost（x64-windows-static），这可能需要 5-10 分钟..."
+          .\vcpkg install boost:x64-windows-static
+          
+          :: 设置 vcpkg 工具链路径
+          echo VCPKG_ROOT=D:\vcpkg >> %GITHUB_ENV%
+          echo VCPKG_TOOLCHAIN=D:\vcpkg\scripts\buildsystems\vcpkg.cmake >> %GITHUB_ENV%
+
       - name: 创建工作目录并下载源码
         run: |
-          :: 创建工作目录
           mkdir D:\libtorrent-work
           cd /d D:\libtorrent-work
           
-          :: 下载 libtorrent-rasterbar-2.0.12 源码
-          echo "正在下载源码..."
+          :: 下载源码
+          echo "正在下载 libtorrent 源码..."
           powershell -Command "Invoke-WebRequest -Uri 'https://github.com/arvidn/libtorrent/releases/download/v2.0.12/libtorrent-rasterbar-2.0.12.tar.gz' -OutFile 'libtorrent.tar.gz'"
           
           :: 解压源码
           echo "正在解压源码..."
           tar -xzf libtorrent.tar.gz
           
-          :: 显示解压后的目录结构
           dir
 
-      - name: 配置 CMake（全功能静态库）
+      - name: 配置 CMake（修复 Boost 查找 + 全功能静态库）
         run: |
           cd /d D:\libtorrent-work\libtorrent-rasterbar-2.0.12
-          
-          :: 创建构建目录
           mkdir build
           cd build
           
-          :: CMake 配置（全功能，仅禁用测试和示例）
+          :: CMake 配置：
+          :: 1. 使用 vcpkg 工具链自动找到 Boost
+          :: 2. 设置 CMake 策略兼容旧版本（修复 CMP0167 警告）
+          :: 3. 全功能开启，仅禁用测试和示例
           echo "正在配置 CMake..."
           cmake .. -G "Visual Studio 17 2022" -A x64 ^
           -DCMAKE_BUILD_TYPE=Release ^
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN% ^
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.20 ^
           -DBUILD_SHARED_LIBS=OFF ^
           -DTORRENT_BUILD_SHARED=OFF ^
           -DTORRENT_BUILD_TESTS=OFF ^
-          -DTORRENT_BUILD_EXAMPLES=OFF
+          -DTORRENT_BUILD_EXAMPLES=OFF ^
+          -DBoost_USE_STATIC_LIBS=ON
           
           if %errorlevel% neq 0 (
               echo CMake 配置失败！
@@ -81,8 +102,6 @@ jobs:
       - name: 收集编译产物
         run: |
           cd /d D:\libtorrent-work
-          
-          :: 创建产物目录
           mkdir dist
           mkdir dist\include
           mkdir dist\lib
@@ -91,11 +110,14 @@ jobs:
           echo "正在复制头文件..."
           xcopy /E /I /Y "libtorrent-rasterbar-2.0.12\include" "dist\include"
           
-          :: 复制静态库文件
+          :: 复制静态库
           echo "正在复制库文件..."
           copy /Y "libtorrent-rasterbar-2.0.12\build\src\Release\libtorrent-rasterbar.lib" "dist\lib\"
           
-          :: 显示产物目录结构
+          :: 复制 Boost 头文件（可选，避免项目中找不到 Boost）
+          echo "正在复制 Boost 头文件..."
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "dist\include"
+          
           echo.
           echo "=== 产物目录结构 ==="
           dir /s dist
@@ -103,6 +125,6 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: libtorrent-rasterbar-2.0.12-full-static-x64
+          name: libtorrent-rasterbar-2.0.12-full-static-x64-with-boost
           path: D:\libtorrent-work\dist\
-          retention-days: 30  # 产物保留 30 天
+          retention-days: 30
