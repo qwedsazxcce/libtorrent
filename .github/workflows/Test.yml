@@ -18,7 +18,7 @@ jobs:
       LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\libtorrent-work
       # 指定兼容Windows Server 2022的vcpkg版本（避免latest兼容性问题）
-      VCPKG_VERSION: 2025.02.24
+      VCPKG_VERSION: 2026-03-04
 
     steps:
       - name: Show basic environment info
