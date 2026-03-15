@@ -3,10 +3,10 @@ name: Build libtorrent-rasterbar 2.0.12 (Full Feature Static Library)
 on:
   push:
     branches:
-      - RC_2_0  # 仅在推送到 main 分支时触发
+      - RC_2_0  # 仅在推送到 RC_2_0 分支时触发
     paths:
       - '.github/workflows/Test.yml'  # 仅当这个文件变化时触发
-  workflow_dispatch:  # 同时保留手动触发
+  workflow_dispatch:  # 保留手动触发能力
 
 jobs:
   build:
@@ -14,6 +14,13 @@ jobs:
     defaults:
       run:
         shell: cmd
+    env:
+      # 全局统一环境变量，避免重复定义出错
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_TOOLCHAIN: ${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-windows-static
+      LIBTORRENT_VERSION: 2.0.12
+      WORK_DIR: ${{ github.workspace }}\libtorrent-work
 
     steps:
       - name: 显示环境信息
@@ -26,61 +33,114 @@ jobs:
           echo.
           echo "=== 当前工作目录 ==="
           cd
+          echo "=== GitHub 工作空间 ==="
+          echo %GITHUB_WORKSPACE%
 
-      - name: 安装 vcpkg 并下载 Boost
-        run: |
-          :: 克隆 vcpkg
-          cd /d D:\
-          git clone https://github.com/microsoft/vcpkg.git
-          cd vcpkg
-          
-          :: 引导 vcpkg
-          call bootstrap-vcpkg.bat
-          
-          :: 安装 Boost（x64-windows-static 版本，适配静态库）
-          echo "正在安装 Boost（x64-windows-static），这可能需要 5-10 分钟..."
-          .\vcpkg install boost:x64-windows-static
-          
-          :: 设置 vcpkg 工具链路径
-          echo VCPKG_ROOT=D:\vcpkg >> %GITHUB_ENV%
-          echo VCPKG_TOOLCHAIN=D:\vcpkg\scripts\buildsystems\vcpkg.cmake >> %GITHUB_ENV%
+      - name: 配置 vcpkg 全局缓存
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: |
+            ${{ env.VCPKG_ROOT }}\downloads
+            ${{ env.VCPKG_ROOT }}\installed
+          key: ${{ runner.os }}-vcpkg-${{ env.VCPKG_TARGET_TRIPLET }}-boost-20260304
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-${{ env.VCPKG_TARGET_TRIPLET }}-
 
-      - name: 创建工作目录并下载源码
+      - name: 安装 vcpkg 并配置 Boost 依赖
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
-          mkdir D:\libtorrent-work
-          cd /d D:\libtorrent-work
+          :: 克隆 vcpkg 并固定稳定版本，避免上游main分支的不稳定问题
+          git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
+          cd /d "%VCPKG_ROOT%"
+          git checkout 2026.03.04
           
-          :: 下载源码
-          echo "正在下载 libtorrent 源码..."
-          powershell -Command "Invoke-WebRequest -Uri 'https://github.com/arvidn/libtorrent/releases/download/v2.0.12/libtorrent-rasterbar-2.0.12.tar.gz' -OutFile 'libtorrent.tar.gz'"
+          :: 引导 vcpkg，关闭遥测提升速度
+          call bootstrap-vcpkg.bat -disableMetrics
+          
+          :: 核心修复：配置 GitHub 下载镜像，彻底解决 502 下载失败问题
+          set VCPKG_ASSET_SOURCES=x-azurl,https://mirror.ghproxy.com/https://github.com/,blocking
+          
+          :: 优化：仅安装 libtorrent 必需的 Boost 组件（避免全量安装，体积减少90%+）
+          echo "正在安装 Boost 必需组件（%VCPKG_TARGET_TRIPLET%）..."
+          .\vcpkg install ^
+            boost-asio:%VCPKG_TARGET_TRIPLET% ^
+            boost-chrono:%VCPKG_TARGET_TRIPLET% ^
+            boost-system:%VCPKG_TARGET_TRIPLET% ^
+            boost-thread:%VCPKG_TARGET_TRIPLET% ^
+            boost-random:%VCPKG_TARGET_TRIPLET% ^
+            boost-iterator:%VCPKG_TARGET_TRIPLET% ^
+            boost-core:%VCPKG_TARGET_TRIPLET% ^
+            boost-config:%VCPKG_TARGET_TRIPLET% ^
+            boost-utility:%VCPKG_TARGET_TRIPLET%
+          
+          if %errorlevel% neq 0 (
+              echo vcpkg 依赖安装失败！
+              exit /b 1
+          )
+          echo vcpkg 依赖安装成功！
+
+      - name: 创建工作目录并下载 libtorrent 源码
+        run: |
+          :: 创建工作目录
+          mkdir "%WORK_DIR%"
+          cd /d "%WORK_DIR%"
+          
+          :: 下载源码（添加3次重试机制，解决网络波动导致的失败）
+          echo "正在下载 libtorrent v%LIBTORRENT_VERSION% 源码..."
+          powershell -Command "& { \
+            $retryCount = 3; \
+            $success = $false; \
+            while ($retryCount -gt 0 -and !$success) { \
+              try { \
+                Invoke-WebRequest -Uri 'https://github.com/arvidn/libtorrent/releases/download/v%LIBTORRENT_VERSION%/libtorrent-rasterbar-%LIBTORRENT_VERSION%.tar.gz' -OutFile 'libtorrent.tar.gz' -UseBasicParsing; \
+                $success = $true; \
+              } catch { \
+                Write-Host '下载失败，5秒后重试...'; \
+                $retryCount--; \
+                Start-Sleep -Seconds 5; \
+              } \
+            } \
+            if (!$success) { exit 1; } \
+          }"
+          
+          if %errorlevel% neq 0 (
+              echo 源码下载失败！
+              exit /b 1
+          )
           
           :: 解压源码
           echo "正在解压源码..."
           tar -xzf libtorrent.tar.gz
           
+          echo "=== 解压后的目录 ==="
           dir
 
-      - name: 配置 CMake（修复 Boost 查找 + 全功能静态库）
+      - name: 配置 CMake（全功能静态库 + 修复 Boost 查找）
         run: |
-          cd /d D:\libtorrent-work\libtorrent-rasterbar-2.0.12
-          mkdir build
-          cd build
+          set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
+          set BUILD_DIR=%SRC_DIR%\build
           
-          :: CMake 配置：
-          :: 1. 使用 vcpkg 工具链自动找到 Boost
-          :: 2. 设置 CMake 策略兼容旧版本（修复 CMP0167 警告）
+          mkdir "%BUILD_DIR%"
+          cd /d "%BUILD_DIR%"
+          
+          :: CMake 核心配置：
+          :: 1. 用 vcpkg 工具链自动定位 Boost，彻底解决找不到 Boost 的问题
+          :: 2. 强制全静态编译 + 静态 MSVC 运行时，完全匹配 x64-windows-static
           :: 3. 全功能开启，仅禁用测试和示例
           echo "正在配置 CMake..."
           cmake .. -G "Visual Studio 17 2022" -A x64 ^
-          -DCMAKE_BUILD_TYPE=Release ^
-          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN% ^
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+          -DCMAKE_TOOLCHAIN_FILE="%VCPKG_TOOLCHAIN%" ^
+          -DVCPKG_TARGET_TRIPLET=%VCPKG_TARGET_TRIPLET% ^
           -DCMAKE_POLICY_VERSION_MINIMUM=3.20 ^
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
           -DBUILD_SHARED_LIBS=OFF ^
-          -DTORRENT_BUILD_SHARED=OFF ^
+          -DTORRENT_BUILD_SHARED_LIBS=OFF ^
+          -DTORRENT_USE_STATIC_RUNTIME=ON ^
           -DTORRENT_BUILD_TESTS=OFF ^
           -DTORRENT_BUILD_EXAMPLES=OFF ^
-          -DBoost_USE_STATIC_LIBS=ON
+          -DBoost_USE_STATIC_LIBS=ON ^
+          -DBoost_USE_STATIC_RUNTIME=ON
           
           if %errorlevel% neq 0 (
               echo CMake 配置失败！
@@ -88,12 +148,13 @@ jobs:
           )
           echo CMake 配置成功！
 
-      - name: 编译（Release x64）
+      - name: 编译 Release 版本（多核加速）
         run: |
-          cd /d D:\libtorrent-work\libtorrent-rasterbar-2.0.12\build
+          set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
+          cd /d "%BUILD_DIR%"
           
-          echo "正在编译（多核加速）..."
-          msbuild libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m
+          echo "正在编译 Release x64 版本（多核加速）..."
+          msbuild libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /p:UseMultiToolTask=true /p:EnforceProcessCountAcrossBuilds=true
           
           if %errorlevel% neq 0 (
               echo 编译失败！
@@ -103,30 +164,31 @@ jobs:
 
       - name: 收集编译产物
         run: |
-          cd /d D:\libtorrent-work
-          mkdir dist
-          mkdir dist\include
-          mkdir dist\lib
+          set DIST_DIR=%WORK_DIR%\dist
+          mkdir "%DIST_DIR%"
+          mkdir "%DIST_DIR%\include"
+          mkdir "%DIST_DIR%\lib"
           
-          :: 复制头文件
-          echo "正在复制头文件..."
-          xcopy /E /I /Y "libtorrent-rasterbar-2.0.12\include" "dist\include"
+          :: 复制 libtorrent 头文件
+          echo "正在复制 libtorrent 头文件..."
+          xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include"
           
-          :: 复制静态库
-          echo "正在复制库文件..."
-          copy /Y "libtorrent-rasterbar-2.0.12\build\src\Release\libtorrent-rasterbar.lib" "dist\lib\"
+          :: 复制编译好的静态库
+          echo "正在复制 libtorrent 静态库..."
+          copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
           
-          :: 复制 Boost 头文件（可选，避免项目中找不到 Boost）
-          echo "正在复制 Boost 头文件..."
-          xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "dist\include"
+          :: 复制 Boost 头文件和静态库，下游项目可直接使用
+          echo "正在复制 Boost 依赖..."
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\include" "%DIST_DIR%\include"
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\lib" "%DIST_DIR%\lib"
           
           echo.
-          echo "=== 产物目录结构 ==="
-          dir /s dist
+          echo "=== 最终产物目录结构 ==="
+          dir /s "%DIST_DIR%"
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: libtorrent-rasterbar-2.0.12-full-static-x64-with-boost
-          path: D:\libtorrent-work\dist\
+          name: libtorrent-rasterbar-${{ env.LIBTORRENT_VERSION }}-full-static-x64-with-boost
+          path: ${{ env.WORK_DIR }}\dist\
           retention-days: 30
