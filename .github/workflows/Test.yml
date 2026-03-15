@@ -14,176 +14,114 @@ jobs:
         shell: cmd
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_TARGET_TRIPLET: x64-windows-static  # 明确静态库Triplet
       LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\libtorrent-work
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      - name: Show basic environment info
-        run: |
-          echo "=== System Info ==="
-          ver
-          echo "=== CMake Version ==="
-          cmake --version
-
-      - name: Cache vcpkg binaries
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.VCPKG_ROOT }}\installed
-            ${{ env.VCPKG_ROOT }}\binarycache
-          key: windows-vcpkg-boost-x64-static-1.90.0
-          restore-keys: windows-vcpkg-boost-x64-static-
-
-      # 保留你已解决的vcpkg二进制下载逻辑（仅修复注释符）
-      - name: Install vcpkg (binary, compatible version)
+      # 1. 初始化vcpkg目录，下载官方vcpkg.exe + 补全triplet配置文件
+      - name: Download vcpkg.exe + triplet config (完整环境)
         shell: powershell
         run: |
           # 创建vcpkg目录
           New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
           Set-Location $env:VCPKG_ROOT
 
-          # 下载指定兼容版本的vcpkg.exe
-          $vcpkgUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
-          Write-Host "=== Downloading vcpkg $env:VCPKG_VERSION from: $vcpkgUrl ==="
-          Invoke-WebRequest -Uri $vcpkgUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
+          # 下载你确认的官方vcpkg.exe
+          $vcpkgExeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
+          Invoke-WebRequest -Uri $vcpkgExeUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
+          Write-Host "=== vcpkg.exe downloaded (size: $(Get-Item vcpkg.exe).Length / 1MB MB) ==="
 
-          # 验证vcpkg是否有效
-          Write-Host "=== Verifying vcpkg.exe ==="
-          .\vcpkg.exe version
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Error: vcpkg.exe is invalid (download failed)!"
+          # 核心：克隆vcpkg主仓库的triplet配置文件（仅几十KB，不用克隆全量）
+          git clone --depth=1 --sparse https://github.com/microsoft/vcpkg.git temp-vcpkg
+          cd temp-vcpkg
+          git sparse-checkout set triplets scripts/buildsystems
+          # 复制配置文件到vcpkg目录（让vcpkg.exe识别triplet）
+          Copy-Item -Recurse triplets ../
+          Copy-Item -Recurse scripts ../
+          cd ..
+          Remove-Item -Recurse -Force temp-vcpkg
+
+      # 2. 验证triplet识别（关键：确认能识别x64-windows-static）
+      - name: Verify triplet support
+        run: |
+          cd /d "%VCPKG_ROOT%"
+          echo "=== Supported triplets ==="
+          .\vcpkg.exe help triplet | findstr "x64-windows-static"
+          if %errorlevel% neq 0 (
+              echo Error: x64-windows-static triplet not found!
               exit 1
-          }
+          )
 
-      # 核心修复：CMD注释符+Triplet传参+Timeout兼容
+      # 3. 安装Boost二进制包（现在能识别triplet了）
       - name: Install Boost (binary only)
         run: |
           cd /d "%VCPKG_ROOT%"
-          
-          :: 强制使用二进制源，避免源码编译（修复：CMD注释用::）
+          :: 强制二进制源，禁止源码编译
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,readwrite
           
-          :: 安装Boost核心组件（带重试，修复Triplet和Timeout）
-          echo "=== Installing Boost binaries ==="
-          set retry=2
-          :boost_install
-          :: 修复：明确指定Triplet，避免解析截断
-          .\vcpkg.exe install boost-asio:%VCPKG_TARGET_TRIPLET% boost-chrono:%VCPKG_TARGET_TRIPLET% boost-system:%VCPKG_TARGET_TRIPLET% boost-thread:%VCPKG_TARGET_TRIPLET% boost-random:%VCPKG_TARGET_TRIPLET% boost-regex:%VCPKG_TARGET_TRIPLET% boost-filesystem:%VCPKG_TARGET_TRIPLET%
-          
-          if %errorlevel% equ 0 goto boost_success
-          set /a retry-=1
-          if %retry% gtr 0 (
-              echo "=== Boost install failed, retry %retry% ==="
-              :: 修复：兼容GitHub Actions的Timeout写法，去掉/nobreak，重定向所有输出
-              timeout /t 5 >nul 2>&1
-              goto boost_install
-          )
-          echo Error: Boost binary install failed!
-          exit /b 1
-          :boost_success
-          echo "=== Boost installed successfully ==="
+          echo "=== Installing Boost x64-windows-static (binary) ==="
+          :: 显式指定triplet，现在能正确识别了
+          .\vcpkg.exe install boost-asio:x64-windows-static boost-chrono:x64-windows-static boost-system:x64-windows-static boost-thread:x64-windows-static boost-random:x64-windows-static boost-regex:x64-windows-static boost-filesystem:x64-windows-static
 
-      # 下载libtorrent源码（修复CMD注释符）
+      # 4. 下载libtorrent源码（多镜像）
       - name: Download libtorrent source
         shell: powershell
         run: |
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
           
-          $mirrors = @(
-            "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz",
-            "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
-          )
-          
-          foreach ($url in $mirrors) {
-              try {
-                  Write-Host "=== Downloading libtorrent from: $url ==="
-                  Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing -TimeoutSec 60
-                  tar -xzf libtorrent.tar.gz
-                  Write-Host "=== Libtorrent source downloaded & extracted ==="
-                  break
-              } catch {
-                  Write-Host "=== Failed to download from $url ==="
-                  if (Test-Path libtorrent.tar.gz) { Remove-Item libtorrent.tar.gz }
-              }
-          }
-          
-          if (-not (Test-Path "libtorrent-rasterbar-$env:LIBTORRENT_VERSION")) {
-              Write-Error "Error: All libtorrent mirrors failed!"
-              exit 1
-          }
+          $url = "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
+          Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing
+          tar -xzf libtorrent.tar.gz
 
-      # CMake配置（修复CMD注释符）
+      # 5. CMake配置（显式指定triplet）
       - name: Configure CMake
         run: |
           set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
           set BUILD_DIR=%SRC_DIR%\build
           mkdir "%BUILD_DIR%" && cd /d "%BUILD_DIR%"
           
-          echo "=== Configuring CMake ==="
           cmake .. -G "Visual Studio 17 2022" -A x64 ^
           -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
-          -DVCPKG_TARGET_TRIPLET=%VCPKG_TARGET_TRIPLET% ^
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
           -DCMAKE_BUILD_TYPE=Release ^
           -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
           -DBUILD_SHARED_LIBS=OFF ^
           -DTORRENT_BUILD_SHARED=OFF ^
-          -DTORRENT_BUILD_TESTS=OFF ^
-          -DTORRENT_BUILD_EXAMPLES=OFF ^
           -DTORRENT_USE_DHT=ON ^
           -DTORRENT_USE_ENCRYPTION=ON ^
           -DTORRENT_USE_IPV6=ON ^
-          -DTORRENT_USE_UPNP=ON ^
-          -DTORRENT_USE_WEBSEEDS=ON ^
-          -DTORRENT_USE_SUPER_SEEDING=ON ^
-          -DTORRENT_USE_PROXY=ON ^
-          -DTORRENT_USE_DISK_CACHE=ON
+          -DTORRENT_USE_UPNP=ON
 
-      # 编译（修复CMD注释符）
+      # 6. 编译libtorrent（自动找MSBuild）
       - name: Build libtorrent
         run: |
           set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
           cd /d "%BUILD_DIR%"
           
-          :: 自动查找MSBuild路径（适配所有VS2022版本）
-          for /f "usebackq tokens=*" %%i in (`vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do set MSBUILD_EXE=%%i
-          if not defined MSBUILD_EXE (
-              echo Error: MSBuild not found!
-              exit /b 1
-          )
-          echo "=== Using MSBuild: %MSBUILD_EXE% ==="
-          
-          :: 多核编译Release x64
-          "%MSBUILD_EXE%" libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /p:WholeProgramOptimization=true
-          if %errorlevel% neq 0 (
-              echo Error: Libtorrent build failed!
-              exit /b 1
-          )
+          for /f "usebackq tokens=*" %%i in (`vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do set MSBUILD=%%i
+          "%MSBUILD%" libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m
 
-      # 收集产物（修复CMD注释符）
+      # 7. 收集产物（开箱即用）
       - name: Collect artifacts
         run: |
           set DIST_DIR=%WORK_DIR%\dist
-          mkdir "%DIST_DIR%\include" && mkdir "%DIST_DIR%\lib"
+          mkdir "%DIST_DIR%\include" "%DIST_DIR%\lib"
           
-          :: 复制libtorrent头文件和库
+          :: 复制libtorrent
           xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include"
           copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
           
-          :: 复制Boost头文件和库
-          xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\include" "%DIST_DIR%\include"
-          xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\lib" "%DIST_DIR%\lib"
-          
-          echo "=== Final artifacts list ==="
-          dir /s "%DIST_DIR%"
+          :: 复制Boost
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "%DIST_DIR%\include"
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\lib" "%DIST_DIR%\lib"
 
-      # 上传产物
+      # 8. 上传产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: libtorrent-2.0.12-full-feature-static-x64-windows
+          name: libtorrent-2.0.12-full-static-x64-windows
           path: ${{ env.WORK_DIR }}\dist\
           retention-days: 30
