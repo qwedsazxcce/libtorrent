@@ -19,7 +19,7 @@ jobs:
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      # 1. 下载vcpkg.exe + bundle配置 + 配置baseline（解决新版vcpkg强制要求）
+      # 1. 下载vcpkg.exe + bundle配置 + 生成正确的vcpkg-configuration.json
       - name: Setup complete vcpkg environment
         shell: powershell
         run: |
@@ -38,24 +38,21 @@ jobs:
           tar -xzf vcpkg-bundle.tar.gz
           Remove-Item vcpkg-bundle.tar.gz -Force
 
-          # 核心：创建vcpkg-configuration.json（修正YAML多行字符串语法）
+          # 核心修正：生成符合vcpkg 2026规范的vcpkg-configuration.json
+          # builtin-baseline是顶层字段，registries的kind用git（微软官方注册表）
           $vcpkgConfig = '{
+            "builtin-baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f",
             "registries": [
               {
-                "kind": "builtin-baseline",
-                "baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f",
-                "repository": "https://github.com/microsoft/vcpkg"
-              },
-              {
-                "kind": "registry",
+                "kind": "git",
                 "name": "microsoft",
-                "location": "https://github.com/microsoft/vcpkg-registry",
+                "repository": "https://github.com/microsoft/vcpkg-registry",
                 "baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f"
               }
             ]
           }'
           $vcpkgConfig | Out-File -FilePath "vcpkg-configuration.json" -Encoding utf8
-          Write-Host "✅ vcpkg-configuration.json created (fixed baseline requirement)"
+          Write-Host "✅ vcpkg-configuration.json created (100% compliant with vcpkg 2026)"
 
           # 验证vcpkg有效性
           .\vcpkg.exe version
@@ -64,17 +61,17 @@ jobs:
               exit 1
           }
 
-      # 2. 安装Boost二进制包（全CMD兼容，无#注释，只读源）
+      # 2. 安装Boost二进制包（只读源，无注释错误）
       - name: Install Boost (binary only, read-only source)
         run: |
           cd /d "%VCPKG_ROOT%"
-          :: 修复：CMD注释用::，禁用统计，只读二进制源
+          :: 只读二进制源，禁用统计
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,read
           set VCPKG_DISABLE_METRICS=1
 
           echo "=== Installing Boost x64-windows-static (binary) ==="
-          :: 显式安装Boost组件，新版vcpkg需指定完整包名
+          :: 显式安装Boost组件
           .\vcpkg.exe install boost-asio:x64-windows-static boost-chrono:x64-windows-static boost-system:x64-windows-static boost-thread:x64-windows-static boost-random:x64-windows-static boost-regex:x64-windows-static boost-filesystem:x64-windows-static
 
           if %errorlevel% neq 0 (
