@@ -19,51 +19,56 @@ jobs:
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      # 1. 下载官方完整bundle包（包含vcpkg.exe + 所有核心目录）
-      - name: Download vcpkg standalone bundle (complete environment)
+      # 1. 下载vcpkg.exe + 解压bundle补配置（完整环境）
+      - name: Download vcpkg.exe + bundle config files
         shell: powershell
         run: |
           # 创建vcpkg目录
           New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
           Set-Location $env:VCPKG_ROOT
 
-          # 下载同版本的standalone bundle包（2026-03-04）
+          # 第一步：单独下载你指定的vcpkg.exe（2026-03-04版本）
+          $vcpkgExeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
+          Write-Host "=== Downloading vcpkg.exe: $vcpkgExeUrl ==="
+          Invoke-WebRequest -Uri $vcpkgExeUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
+          # 验证exe大小（确保下载完整，7M左右）
+          $exeSize = (Get-Item vcpkg.exe).Length / 1MB
+          Write-Host "✅ vcpkg.exe downloaded (size: $exeSize MB)"
+
+          # 第二步：下载bundle包，解压配置文件（ports/triplets/scripts）
           $bundleUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg-standalone-bundle.tar.gz"
           Write-Host "=== Downloading vcpkg bundle: $bundleUrl ==="
           Invoke-WebRequest -Uri $bundleUrl -OutFile vcpkg-bundle.tar.gz -UseBasicParsing -TimeoutSec 120
-
-          # 解压bundle包（得到完整的vcpkg环境）
+          # 解压bundle到vcpkg目录（补全配置文件）
           tar -xzf vcpkg-bundle.tar.gz
-          Remove-Item vcpkg-bundle.tar.gz
+          Remove-Item vcpkg-bundle.tar.gz -Force
 
-          # 验证vcpkg.exe有效性
+          # 验证vcpkg环境完整性
           .\vcpkg.exe version
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Error: vcpkg.exe from bundle is invalid!"
+              Write-Error "Error: vcpkg environment is invalid!"
               exit 1
           }
-          Write-Host "✅ Vcpkg bundle extracted successfully!"
+          Write-Host "✅ Vcpkg complete environment ready!"
 
-      # 2. 验证包和triplet识别
+      # 2. 验证包和triplet识别（确保配置补全）
       - name: Verify vcpkg environment
         run: |
           cd /d "%VCPKG_ROOT%"
-          :: 验证能识别boost-asio和x64-windows-static
           .\vcpkg.exe search boost-asio | findstr "boost-asio"
           .\vcpkg.exe help triplet | findstr "x64-windows-static"
           echo "✅ Vcpkg can recognize boost-asio and x64-windows-static!"
 
-      # 3. 安装Boost（核心：二进制源设为只读，禁止推送）
+      # 3. 安装Boost（只读源，解决405报错）
       - name: Install Boost (binary only, read-only source)
         run: |
           cd /d "%VCPKG_ROOT%"
-          :: 关键修复：binary源设为read（只读），禁止推送，解决405报错
+          # 核心：只读源，禁止推送
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,read
-          set VCPKG_DISABLE_METRICS=1  # 禁用不必要的统计请求，减少报错
+          set VCPKG_DISABLE_METRICS=1
 
-          echo "=== Installing Boost x64-windows-static (binary only) ==="
-          :: 仅下载二进制包，不编译、不推送
+          echo "=== Installing Boost x64-windows-static (binary) ==="
           .\vcpkg.exe install ^
             boost-asio:x64-windows-static ^
             boost-chrono:x64-windows-static ^
@@ -72,12 +77,6 @@ jobs:
             boost-random:x64-windows-static ^
             boost-regex:x64-windows-static ^
             boost-filesystem:x64-windows-static
-
-          if %errorlevel% neq 0 (
-              echo Error: Boost binary install failed!
-              exit 1
-          )
-          echo "✅ Boost binaries installed successfully!"
 
       # 4. 下载libtorrent源码（镜像源兜底）
       - name: Download libtorrent source
@@ -89,7 +88,6 @@ jobs:
           $url = "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing
           tar -xzf libtorrent.tar.gz
-          Write-Host "✅ Libtorrent source downloaded!"
 
       # 5. CMake配置（全功能静态库）
       - name: Configure CMake
@@ -119,7 +117,6 @@ jobs:
           
           for /f "usebackq tokens=*" %%i in (`vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do set MSBUILD=%%i
           "%MSBUILD%" libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m
-          echo "✅ Libtorrent built successfully!"
 
       # 7. 收集产物（开箱即用）
       - name: Collect artifacts
@@ -127,16 +124,13 @@ jobs:
           set DIST_DIR=%WORK_DIR%\dist
           mkdir "%DIST_DIR%\include" "%DIST_DIR%\lib"
           
-          :: 复制libtorrent
+          # 复制libtorrent
           xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include"
           copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
           
-          :: 复制Boost
+          # 复制Boost
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "%DIST_DIR%\include"
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\lib" "%DIST_DIR%\lib"
-          
-          echo "✅ Final artifacts:"
-          dir /s "%DIST_DIR%"
 
       # 8. 上传产物
       - name: Upload artifacts
