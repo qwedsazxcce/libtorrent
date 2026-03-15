@@ -13,23 +13,21 @@ jobs:
       run:
         shell: cmd
     env:
-      # 核心环境变量（仅保留必要）
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_TARGET_TRIPLET: x64-windows-static
       LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\libtorrent-work
+      # 指定兼容Windows Server 2022的vcpkg版本（避免latest兼容性问题）
+      VCPKG_VERSION: 2025.02.24
 
     steps:
-      # 1. 基础环境信息（可选，用于调试）
       - name: Show basic environment info
         run: |
+          echo "=== System Info ==="
+          ver
           echo "=== CMake Version ==="
           cmake --version
-          echo.
-          echo "=== GitHub Workspace ==="
-          echo %GITHUB_WORKSPACE%
 
-      # 2. 缓存vcpkg二进制依赖（避免重复下载）
       - name: Cache vcpkg binaries
         uses: actions/cache@v4
         with:
@@ -39,20 +37,40 @@ jobs:
           key: windows-vcpkg-boost-x64-static-1.90.0
           restore-keys: windows-vcpkg-boost-x64-static-
 
-      # 3. 安装vcpkg工具（二进制）+ Boost二进制包（核心步骤）
-      - name: Install vcpkg and Boost (binary only)
+      # 核心修复：用PowerShell下载兼容版本的vcpkg.exe（处理重定向，验证有效性）
+      - name: Install vcpkg (binary, compatible version)
+        shell: powershell
         run: |
-          :: 1. 下载vcpkg二进制工具（无需克隆源码）
-          if not exist "%VCPKG_ROOT%" mkdir "%VCPKG_ROOT%"
+          # 创建vcpkg目录
+          New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
+          Set-Location $env:VCPKG_ROOT
+
+          # 下载指定兼容版本的vcpkg.exe（避免latest的兼容性坑）
+          $vcpkgUrl = "https://github.com/microsoft/vcpkg/releases/download/v$env:VCPKG_VERSION/vcpkg.exe"
+          Write-Host "=== Downloading vcpkg $env:VCPKG_VERSION from: $vcpkgUrl ==="
+          Invoke-WebRequest -Uri $vcpkgUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
+
+          # 验证vcpkg是否有效（关键：避免下载到错误页面）
+          Write-Host "=== Verifying vcpkg.exe ==="
+          .\vcpkg.exe version
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Error: vcpkg.exe is invalid (download failed)!"
+              exit 1
+          }
+
+      # 安装Boost二进制包（强制二进制，禁止源码编译）
+      - name: Install Boost (binary only)
+        run: |
           cd /d "%VCPKG_ROOT%"
-          curl -L https://github.com/microsoft/vcpkg/releases/latest/download/vcpkg.exe -o vcpkg.exe
           
-          :: 2. 强制vcpkg仅使用二进制包（禁止源码编译）
+          # 强制使用二进制源，避免源码编译
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,readwrite
           
-          :: 3. 安装Boost核心组件（仅二进制，秒级完成）
-          echo "=== Install Boost binaries ==="
+          # 安装Boost核心组件（带简单重试）
+          echo "=== Installing Boost binaries ==="
+          set retry=2
+          :boost_install
           vcpkg install ^
             boost-asio:%VCPKG_TARGET_TRIPLET% ^
             boost-chrono:%VCPKG_TARGET_TRIPLET% ^
@@ -61,43 +79,57 @@ jobs:
             boost-random:%VCPKG_TARGET_TRIPLET% ^
             boost-regex:%VCPKG_TARGET_TRIPLET% ^
             boost-filesystem:%VCPKG_TARGET_TRIPLET%
+          
+          if %errorlevel% equ 0 goto boost_success
+          set /a retry-=1
+          if %retry% gtr 0 (
+              echo "=== Boost install failed, retry %retry% ==="
+              timeout /t 5 /nobreak >nul
+              goto boost_install
+          )
+          echo Error: Boost binary install failed!
+          exit /b 1
+          :boost_success
+          echo "=== Boost installed successfully ==="
 
-      # 4. 下载libtorrent源码（多镜像兜底）
-      - name: Download libtorrent source code
+      # 下载libtorrent源码（多镜像兜底）
+      - name: Download libtorrent source
         shell: powershell
         run: |
-          # 创建工作目录
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
           
-          # 多镜像源（优先官方，失败自动切镜像）
           $mirrors = @(
             "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz",
             "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           )
           
-          # 下载逻辑（带重试）
-          $output = "libtorrent.tar.gz"
           foreach ($url in $mirrors) {
               try {
-                  Write-Host "Download from: $url"
-                  Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing -TimeoutSec 60
-                  tar -xzf $output
-                  Write-Host "Download & extract success!"
+                  Write-Host "=== Downloading libtorrent from: $url ==="
+                  Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing -TimeoutSec 60
+                  tar -xzf libtorrent.tar.gz
+                  Write-Host "=== Libtorrent source downloaded & extracted ==="
                   break
               } catch {
-                  Write-Host "Failed to download from $url"
+                  Write-Host "=== Failed to download from $url ==="
+                  if (Test-Path libtorrent.tar.gz) { Remove-Item libtorrent.tar.gz }
               }
           }
+          
+          if (-not (Test-Path "libtorrent-rasterbar-$env:LIBTORRENT_VERSION")) {
+              Write-Error "Error: All libtorrent mirrors failed!"
+              exit 1
+          }
 
-      # 5. CMake配置（全功能静态库）
-      - name: Configure CMake (Full Feature)
+      # CMake配置（全功能静态库）
+      - name: Configure CMake
         run: |
           set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
           set BUILD_DIR=%SRC_DIR%\build
           mkdir "%BUILD_DIR%" && cd /d "%BUILD_DIR%"
           
-          echo "=== Configure CMake ==="
+          echo "=== Configuring CMake ==="
           cmake .. -G "Visual Studio 17 2022" -A x64 ^
           -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
           -DVCPKG_TARGET_TRIPLET=%VCPKG_TARGET_TRIPLET% ^
@@ -107,7 +139,6 @@ jobs:
           -DTORRENT_BUILD_SHARED=OFF ^
           -DTORRENT_BUILD_TESTS=OFF ^
           -DTORRENT_BUILD_EXAMPLES=OFF ^
-          # 全功能核心参数
           -DTORRENT_USE_DHT=ON ^
           -DTORRENT_USE_ENCRYPTION=ON ^
           -DTORRENT_USE_IPV6=ON ^
@@ -117,21 +148,29 @@ jobs:
           -DTORRENT_USE_PROXY=ON ^
           -DTORRENT_USE_DISK_CACHE=ON
 
-      # 6. 编译（用vswhere自动找MSBuild，通用无硬编码）
-      - name: Build libtorrent (Full Feature Static Library)
+      # 编译（vswhere自动找MSBuild，通用稳定）
+      - name: Build libtorrent
         run: |
           set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
           cd /d "%BUILD_DIR%"
           
-          :: 核心：用vswhere自动查找MSBuild路径（适配所有VS版本）
+          :: 自动查找MSBuild路径（适配所有VS2022版本）
           for /f "usebackq tokens=*" %%i in (`vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do set MSBUILD_EXE=%%i
+          if not defined MSBUILD_EXE (
+              echo Error: MSBuild not found!
+              exit /b 1
+          )
           echo "=== Using MSBuild: %MSBUILD_EXE% ==="
           
-          :: 编译Release x64（多核编译，速度最快）
+          :: 多核编译Release x64
           "%MSBUILD_EXE%" libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /p:WholeProgramOptimization=true
+          if %errorlevel% neq 0 (
+              echo Error: Libtorrent build failed!
+              exit /b 1
+          )
 
-      # 7. 收集产物（libtorrent + Boost 头文件/库，开箱即用）
-      - name: Collect build artifacts
+      # 收集产物（开箱即用）
+      - name: Collect artifacts
         run: |
           set DIST_DIR=%WORK_DIR%\dist
           mkdir "%DIST_DIR%\include" && mkdir "%DIST_DIR%\lib"
@@ -140,15 +179,14 @@ jobs:
           xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include"
           copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
           
-          :: 复制Boost头文件和库（无需单独找，直接从vcpkg目录复制）
+          :: 复制Boost头文件和库
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\include" "%DIST_DIR%\include"
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\%VCPKG_TARGET_TRIPLET%\lib" "%DIST_DIR%\lib"
           
-          :: 显示产物目录（验证）
-          echo "=== Final Artifacts ==="
+          echo "=== Final artifacts list ==="
           dir /s "%DIST_DIR%"
 
-      # 8. 上传产物（可下载使用）
+      # 上传产物
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
