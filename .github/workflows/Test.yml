@@ -17,34 +17,37 @@ jobs:
       VCPKG_TRIPLET: x64-windows-static
 
     steps:
-      - name: 1. Checkout and Bootstrap vcpkg
+      - name: 0. Restore vcpkg & Boost from Cache
+        uses: actions/cache@v4
+        id: cache-boost
+        with:
+          path: |
+            ${{ env.VCPKG_ROOT }}
+          # 只要 vcpkg 版本和 triplet 不变，就会命中缓存
+          key: vcpkg-${{ env.VCPKG_TAG }}-${{ env.VCPKG_TRIPLET }}-boost-full
+
+      - name: 1. Checkout and Bootstrap vcpkg (if not cached)
+        if: steps.cache-boost.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          Write-Host "Cloning vcpkg at tag: $env:VCPKG_TAG"
+          Write-Host "Cache miss, setting up vcpkg..."
           git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           Set-Location $env:VCPKG_ROOT
           git checkout $env:VCPKG_TAG
-          
-          Write-Host "Bootstrapping vcpkg..."
           .\bootstrap-vcpkg.bat
-          
-          if (-not (Test-Path ".\vcpkg.exe")) { throw "vcpkg.exe not found, bootstrap failed" }
-          .\vcpkg.exe version
-          Write-Host "vcpkg initialized successfully"
+          Write-Host "vcpkg initialized"
 
-      - name: 2. Install Boost (Full Package)
+      - name: 2. Install Boost (if not cached)
+        if: steps.cache-boost.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           Set-Location $env:VCPKG_ROOT
-          
           $env:VCPKG_FEATURE_FLAGS = "binaries"
           $env:VCPKG_BINARY_SOURCES = "clear;nuget,https://aka.ms/vcpkg-default-binarysource,read"
           $env:VCPKG_DISABLE_METRICS = "1"
-
-          Write-Host "Installing complete Boost package (this may take a while)..."
-          # 修复：直接安装 boost 元包，包含所有子库，不再手动一个个列
-          & .\vcpkg.exe install "boost`:$env:VCPKG_TRIPLET"
           
+          Write-Host "Installing Boost..."
+          & .\vcpkg.exe install "boost`:$env:VCPKG_TRIPLET"
           if ($LASTEXITCODE -ne 0) { throw "Failed to install Boost" }
           Write-Host "Boost installed successfully"
 
@@ -56,15 +59,26 @@ jobs:
           $fileName = "libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           $url = "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/$fileName"
           
-          Write-Host "Downloading from: $url"
-          Invoke-WebRequest -Uri $url -OutFile $fileName -UseBasicParsing
-          
-          Write-Host "Extracting..."
-          tar -xzf $fileName
-          
-          Write-Host "Source code ready"
+          # 只有文件不存在时才下载
+          if (-not (Test-Path $fileName)) {
+            Write-Host "Downloading source..."
+            Invoke-WebRequest -Uri $url -OutFile $fileName -UseBasicParsing
+            tar -xzf $fileName
+          } else {
+            Write-Host "Source already exists, skipping download."
+          }
 
-      - name: 4. Configure CMake
+      - name: 4. Restore Build Directory from Cache
+        uses: actions/cache@v4
+        id: cache-build
+        with:
+          path: |
+            ${{ env.WORK_DIR }}\libtorrent-rasterbar-${{ env.LIBTORRENT_VERSION }}\build
+          # 只要源码版本不变，就尝试复用编译缓存
+          key: build-${{ env.LIBTORRENT_VERSION }}-${{ env.VCPKG_TRIPLET }}
+
+      - name: 5. Configure CMake (if build not cached)
+        if: steps.cache-build.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           $srcDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION"
@@ -83,21 +97,14 @@ jobs:
             "-DCMAKE_CXX_STANDARD=17",
             "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
             "-DBUILD_SHARED_LIBS=OFF",
-            "-DTORRENT_BUILD_SHARED=OFF",
-            "-DTORRENT_USE_DHT=ON",
-            "-DTORRENT_USE_ENCRYPTION=ON",
-            "-DTORRENT_USE_IPV6=ON",
-            "-DTORRENT_USE_UPNP=ON",
-            "-DTORRENT_USE_WEBSEEDS=ON"
+            "-DTORRENT_BUILD_SHARED=OFF"
           )
 
-          Write-Host "Running CMake configuration..."
+          Write-Host "Running CMake..."
           cmake @cmakeArgs
-          
-          if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
-          Write-Host "CMake configured successfully"
+          if ($LASTEXITCODE -ne 0) { throw "CMake failed" }
 
-      - name: 5. Build libtorrent
+      - name: 6. Build libtorrent
         shell: powershell
         run: |
           $buildDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION\build"
@@ -105,37 +112,36 @@ jobs:
           
           $msbuildPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"
           
-          if (-not $msbuildPath) { throw "MSBuild not found" }
-          Write-Host "Using MSBuild at: $msbuildPath"
-
-          Write-Host "Starting build (Release|x64)..."
+          Write-Host "Starting build (incremental if cached)..."
           & $msbuildPath libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal
           
           if ($LASTEXITCODE -ne 0) { throw "Build failed" }
           Write-Host "Build succeeded"
 
-      - name: 6. Collect Artifacts
+      - name: 7. Collect and Upload Final Artifact
         shell: powershell
         run: |
-          $distDir = "$env:WORK_DIR\dist"
+          $distDir = "$env:WORK_DIR\dist-final"
           $srcDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION"
           $vcpkgInstalled = "$env:VCPKG_ROOT\installed\$env:VCPKG_TRIPLET"
           
           New-Item -Path "$distDir\include", "$distDir\lib" -ItemType Directory -Force | Out-Null
           
-          Write-Host "Copying files..."
-          Copy-Item -Path "$srcDir\include\*" -Destination "$distDir\include\" -Recurse -Force
-          Copy-Item -Path "$srcDir\build\src\Release\libtorrent-rasterbar.lib" -Destination "$distDir\lib\" -Force
+          # 智能搜索 lib 文件
+          $libFile = Get-ChildItem -Path $srcDir -Filter "*.lib" -Recurse -File | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $libFile) { throw "Lib file not found" }
           
+          Write-Host "Found lib at: $libFile"
+          Copy-Item -Path "$libFile" -Destination "$distDir\lib\" -Force
+          Copy-Item -Path "$srcDir\include\*" -Destination "$distDir\include\" -Recurse -Force
           Copy-Item -Path "$vcpkgInstalled\include\*" -Destination "$distDir\include\" -Recurse -Force
           Copy-Item -Path "$vcpkgInstalled\lib\*" -Destination "$distDir\lib\" -Recurse -Force
           
-          Write-Host "Artifacts collected. Directory structure:"
-          Get-ChildItem $distDir -Recurse | Select-Object FullName
+          Write-Host "Final package ready at: $distDir"
 
-      - name: 7. Upload Artifact
+      - name: Upload Final Package
         uses: actions/upload-artifact@v4
         with:
-          name: libtorrent-2.0.12-full-static-x64-windows
-          path: ${{ env.WORK_DIR }}\dist\
+          name: libtorrent-2.0.12-final-sdk
+          path: ${{ env.WORK_DIR }}\dist-final\
           retention-days: 30
