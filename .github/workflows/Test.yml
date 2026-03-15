@@ -10,14 +10,13 @@ jobs:
   build:
     runs-on: windows-2022
     env:
-      # 统一使用环境变量，避免硬编码
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\build-workspace
-      VCPKG_TAG: 2026.03.04 # 使用标准日期标签
+      VCPKG_TAG: 2026.03.04
 
     steps:
-      - name: 1. Checkout vcpkg (官方标准初始化方式)
+      - name: 1. Checkout and Bootstrap vcpkg
         shell: powershell
         run: |
           Write-Host "Cloning vcpkg at tag: $env:VCPKG_TAG"
@@ -28,18 +27,16 @@ jobs:
           Write-Host "Bootstrapping vcpkg..."
           .\bootstrap-vcpkg.bat
           
-          # 验证
-          if (-not (Test-Path ".\vcpkg.exe")) { throw "vcpkg.exe 未生成，初始化失败" }
+          if (-not (Test-Path ".\vcpkg.exe")) { throw "vcpkg.exe not found, bootstrap failed" }
           .\vcpkg.exe version
-          Write-Host "vcpkg 环境初始化完成" -ForegroundColor Green
+          Write-Host "vcpkg initialized successfully"
 
-      - name: 2. 创建项目目录与 vcpkg.json
+      - name: 2. Create Workspace and vcpkg.json
         shell: powershell
         run: |
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
 
-          # 生成纯净的 vcpkg.json (无任何注释，严格 JSON)
           $manifestContent = @{
             name = "libtorrent-build"
             version = "1.0.0"
@@ -52,44 +49,42 @@ jobs:
           }
           
           $manifestContent | ConvertTo-Json -Depth 10 | Out-File -FilePath "vcpkg.json" -Encoding utf8
-          Write-Host "vcpkg.json 已生成于: $env:WORK_DIR" -ForegroundColor Cyan
+          Write-Host "vcpkg.json created at: $env:WORK_DIR"
           Get-Content "vcpkg.json"
 
-      - name: 3. 安装 Boost 依赖 (Manifest Mode)
+      - name: 3. Install Boost Dependencies
         shell: powershell
         run: |
           Set-Location $env:WORK_DIR
           
-          # 配置二进制缓存 (减少编译时间)
           $env:VCPKG_FEATURE_FLAGS = "binaries"
           $env:VCPKG_BINARY_SOURCES = "clear;nuget,https://aka.ms/vcpkg-default-binarysource,read"
           $env:VCPKG_DISABLE_METRICS = "1"
 
-          Write-Host "开始安装 Boost (x64-windows-static)..."
-          # 注意：--x-manifest-root 指向包含 vcpkg.json 的目录
+          Write-Host "Installing Boost (x64-windows-static)..."
           & $env:VCPKG_ROOT\vcpkg.exe install --x-manifest-root=$env:WORK_DIR --triplet=x64-windows-static
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Boost 安装失败"
+            throw "Boost installation failed"
           }
-          Write-Host "Boost 安装成功" -ForegroundColor Green
+          Write-Host "Boost installed successfully"
 
-      - name: 4. 下载并解压 libtorrent 源码
+      - name: 4. Download and Extract libtorrent Source
         shell: powershell
         run: |
           Set-Location $env:WORK_DIR
           $fileName = "libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           $url = "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/$fileName"
           
-          Write-Host "正在下载: $url"
+          Write-Host "Downloading from: $url"
           Invoke-WebRequest -Uri $url -OutFile $fileName -UseBasicParsing
           
-          Write-Host "正在解压..."
+          Write-Host "Extracting..."
           tar -xzf $fileName
           
-          Write-Host "源码准备完毕" -ForegroundColor Green
+          Write-Host "Source code ready"
 
-      - name: 5. 配置 CMake
+      - name: 5. Configure CMake
         shell: powershell
         run: |
           $srcDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION"
@@ -115,31 +110,30 @@ jobs:
             "-DTORRENT_USE_WEBSEEDS=ON"
           )
 
-          Write-Host "运行 CMake 配置..."
+          Write-Host "Running CMake configuration..."
           cmake @cmakeArgs
           
-          if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败" }
-          Write-Host "CMake 配置成功" -ForegroundColor Green
+          if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
+          Write-Host "CMake configured successfully"
 
-      - name: 6. 编译 libtorrent
+      - name: 6. Build libtorrent
         shell: powershell
         run: |
           $buildDir = "$env:WORK_DIR\libtorrent-rasterbar-$env:LIBTORRENT_VERSION\build"
           Set-Location $buildDir
           
-          # 查找 MSBuild
           $msbuildPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"
           
-          if (-not $msbuildPath) { throw "未找到 MSBuild" }
-          Write-Host "使用 MSBuild: $msbuildPath"
+          if (-not $msbuildPath) { throw "MSBuild not found" }
+          Write-Host "Using MSBuild at: $msbuildPath"
 
-          Write-Host "开始编译 (Release|x64)..."
+          Write-Host "Starting build (Release|x64)..."
           & $msbuildPath libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal
           
-          if ($LASTEXITCODE -ne 0) { throw "编译失败" }
-          Write-Host "编译成功" -ForegroundColor Green
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+          Write-Host "Build succeeded"
 
-      - name: 7. 收集产物
+      - name: 7. Collect Artifacts
         shell: powershell
         run: |
           $distDir = "$env:WORK_DIR\dist"
@@ -148,17 +142,17 @@ jobs:
           
           New-Item -Path "$distDir\include", "$distDir\lib" -ItemType Directory -Force | Out-Null
           
-          Write-Host "正在复制文件..."
+          Write-Host "Copying files..."
           Copy-Item -Path "$srcDir\include\*" -Destination "$distDir\include\" -Recurse -Force
           Copy-Item -Path "$srcDir\build\src\Release\libtorrent-rasterbar.lib" -Destination "$distDir\lib\" -Force
           
           Copy-Item -Path "$vcpkgInstalled\include\*" -Destination "$distDir\include\" -Recurse -Force
           Copy-Item -Path "$vcpkgInstalled\lib\*" -Destination "$distDir\lib\" -Recurse -Force
           
-          Write-Host "产物收集完毕，结构如下：" -ForegroundColor Cyan
+          Write-Host "Artifacts collected. Directory structure:"
           Get-ChildItem $distDir -Recurse | Select-Object FullName
 
-      - name: 8. 上传 Artifact
+      - name: 8. Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: libtorrent-2.0.12-full-static-x64-windows
