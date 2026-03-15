@@ -19,64 +19,77 @@ jobs:
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      # 1. 初始化vcpkg目录，下载官方vcpkg.exe + 补全triplet配置文件
-      - name: Download vcpkg.exe + triplet config (完整环境)
+      # 1. 完整初始化vcpkg环境（exe + 核心配置 + ports目录）
+      - name: Setup complete vcpkg environment (binary + config)
         shell: powershell
         run: |
           # 创建vcpkg目录
           New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
           Set-Location $env:VCPKG_ROOT
 
-          # 下载你确认的官方vcpkg.exe
+          # 1. 下载你确认的官方vcpkg.exe
           $vcpkgExeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
           Invoke-WebRequest -Uri $vcpkgExeUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
-          Write-Host "=== vcpkg.exe downloaded (size: $(Get-Item vcpkg.exe).Length / 1MB MB) ==="
+          Write-Host "✅ vcpkg.exe downloaded (size: $(Get-Item vcpkg.exe).Length / 1KB KB) KB"
 
-          # 核心：克隆vcpkg主仓库的triplet配置文件（仅几十KB，不用克隆全量）
-          git clone --depth=1 --sparse https://github.com/microsoft/vcpkg.git temp-vcpkg
-          cd temp-vcpkg
-          git sparse-checkout set triplets scripts/buildsystems
-          # 复制配置文件到vcpkg目录（让vcpkg.exe识别triplet）
-          Copy-Item -Recurse triplets ../
-          Copy-Item -Recurse scripts ../
-          cd ..
+          # 2. 克隆vcpkg主仓库的核心目录（仅需几十MB，10秒完成）
+          # 关键：包含ports（包定义）、triplets（编译目标）、scripts（工具链）
+          git clone --depth=1 https://github.com/microsoft/vcpkg.git temp-vcpkg
+          Copy-Item -Recurse temp-vcpkg/ports ../vcpkg/
+          Copy-Item -Recurse temp-vcpkg/triplets ../vcpkg/
+          Copy-Item -Recurse temp-vcpkg/scripts ../vcpkg/
           Remove-Item -Recurse -Force temp-vcpkg
 
-      # 2. 验证triplet识别（关键：确认能识别x64-windows-static）
-      - name: Verify triplet support
+      # 2. 验证vcpkg环境完整性
+      - name: Verify vcpkg environment
         run: |
           cd /d "%VCPKG_ROOT%"
-          echo "=== Supported triplets ==="
+          :: 验证能识别boost-asio包
+          .\vcpkg.exe search boost-asio | findstr "boost-asio"
+          if %errorlevel% neq 0 (
+              echo Error: boost-asio package not found!
+              exit 1
+          )
+          :: 验证能识别x64-windows-static
           .\vcpkg.exe help triplet | findstr "x64-windows-static"
           if %errorlevel% neq 0 (
               echo Error: x64-windows-static triplet not found!
               exit 1
           )
+          echo "✅ vcpkg environment is complete!"
 
-      # 3. 安装Boost二进制包（现在能识别triplet了）
+      # 3. 安装Boost（强制二进制，禁止源码编译）
       - name: Install Boost (binary only)
         run: |
           cd /d "%VCPKG_ROOT%"
-          :: 强制二进制源，禁止源码编译
+          :: 核心：强制只用二进制包，跳过源码编译
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,readwrite
           
           echo "=== Installing Boost x64-windows-static (binary) ==="
-          :: 显式指定triplet，现在能正确识别了
-          .\vcpkg.exe install boost-asio:x64-windows-static boost-chrono:x64-windows-static boost-system:x64-windows-static boost-thread:x64-windows-static boost-random:x64-windows-static boost-regex:x64-windows-static boost-filesystem:x64-windows-static
+          :: 显式指定triplet，现在能正确识别包和编译目标
+          .\vcpkg.exe install ^
+            boost-asio:x64-windows-static ^
+            boost-chrono:x64-windows-static ^
+            boost-system:x64-windows-static ^
+            boost-thread:x64-windows-static ^
+            boost-random:x64-windows-static ^
+            boost-regex:x64-windows-static ^
+            boost-filesystem:x64-windows-static
 
-      # 4. 下载libtorrent源码（多镜像）
+      # 4. 下载libtorrent源码
       - name: Download libtorrent source
         shell: powershell
         run: |
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
           
+          # 优先用镜像源，避免GitHub直连问题
           $url = "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing
           tar -xzf libtorrent.tar.gz
 
-      # 5. CMake配置（显式指定triplet）
+      # 5. CMake配置（全功能静态库）
       - name: Configure CMake
         run: |
           set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
@@ -93,7 +106,8 @@ jobs:
           -DTORRENT_USE_DHT=ON ^
           -DTORRENT_USE_ENCRYPTION=ON ^
           -DTORRENT_USE_IPV6=ON ^
-          -DTORRENT_USE_UPNP=ON
+          -DTORRENT_USE_UPNP=ON ^
+          -DTORRENT_USE_WEBSEEDS=ON
 
       # 6. 编译libtorrent（自动找MSBuild）
       - name: Build libtorrent
@@ -110,13 +124,16 @@ jobs:
           set DIST_DIR=%WORK_DIR%\dist
           mkdir "%DIST_DIR%\include" "%DIST_DIR%\lib"
           
-          :: 复制libtorrent
+          :: 复制libtorrent头文件和库
           xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include"
           copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
           
-          :: 复制Boost
+          :: 复制Boost头文件和库
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "%DIST_DIR%\include"
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\lib" "%DIST_DIR%\lib"
+          
+          echo "✅ Final artifacts list:"
+          dir /s "%DIST_DIR%"
 
       # 8. 上传产物
       - name: Upload artifacts
