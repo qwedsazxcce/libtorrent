@@ -37,6 +37,7 @@ jobs:
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
 
+          # 修复：移除了 builtin-baseline，因为我们已经锁定了 vcpkg 版本 (git tag)
           $manifestContent = @{
             name = "libtorrent-build"
             version = "1.0.0"
@@ -45,7 +46,6 @@ jobs:
               "boost-thread", "boost-random", "boost-regex", 
               "boost-filesystem"
             )
-            "builtin-baseline" = "7e74653e3f7b123e9e9b224d99e49f0936268c8f"
           }
           
           $manifestContent | ConvertTo-Json -Depth 10 | Out-File -FilePath "vcpkg.json" -Encoding utf8
