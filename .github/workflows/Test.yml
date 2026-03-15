@@ -14,46 +14,39 @@ jobs:
         shell: cmd
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      LIBTORRENT_VERSION: 2.0.12  # 匹配下载链接的版本
+      LIBTORRENT_VERSION: 2.0.12
       WORK_DIR: ${{ github.workspace }}\libtorrent-work
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      # 1. Setup vcpkg environment (exe + bundle config)
       - name: Setup vcpkg environment
         shell: powershell
         run: |
-          # Create vcpkg directory
           New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
           Set-Location $env:VCPKG_ROOT
 
-          # Download official vcpkg.exe
           $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
           Invoke-WebRequest -Uri $exeUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
           if ((Get-Item vcpkg.exe).Length -lt 5MB) { throw "vcpkg.exe download incomplete" }
-          Write-Host "vcpkg.exe downloaded (size: $(Get-Item vcpkg.exe).Length / 1MB MB)"
+          Write-Host "vcpkg.exe downloaded (size: $((Get-Item vcpkg.exe).Length / 1MB) MB)"
 
-          # Download bundle config files
           $bundleUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg-standalone-bundle.tar.gz"
           Invoke-WebRequest -Uri $bundleUrl -OutFile bundle.tar.gz -UseBasicParsing -TimeoutSec 120
           tar -xzf bundle.tar.gz
           Remove-Item bundle.tar.gz -Force
           Write-Host "vcpkg config files extracted successfully"
 
-          # Validate vcpkg basic functionality
           .\vcpkg.exe version | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "vcpkg environment initialization failed" }
 
-      # 2. Create vcpkg.json (manifest file - 修正triplet字段位置)
       - name: Create vcpkg.json manifest
         shell: powershell
         run: |
           Set-Location $env:VCPKG_ROOT
-          # 核心修正：triplet移到顶层default-triplet，dependency仅保留name（符合官方规范）
           $manifest = '{
             "name": "libtorrent-build",
             "version": "1.0.0",
-            "default-triplet": "x64-windows-static",  # 全局指定triplet
+            "default-triplet": "x64-windows-static",
             "dependencies": [
               "boost-asio",
               "boost-chrono",
@@ -68,39 +61,33 @@ jobs:
           $manifest | Out-File -FilePath "vcpkg.json" -Encoding utf8
           Write-Host "vcpkg.json created (compliant with vcpkg manifest rules)"
 
-      # 3. Install Boost (binary only, manifest mode)
       - name: Install Boost binaries
         run: |
           cd /d "%VCPKG_ROOT%"
-          # Read-only binary source to avoid 405 error
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,read
           set VCPKG_DISABLE_METRICS=1
 
-          echo "Installing Boost x64-windows-static (binary)..."
-          # Install via manifest mode (指定triplet，和default-triplet一致)
+          echo Installing Boost x64-windows-static (binary)...
           .\vcpkg.exe install --x-manifest-root . --triplet x64-windows-static
 
           if %errorlevel% neq 0 (
               echo Boost installation failed!
               exit 1
           )
-          echo "Boost binaries installed successfully"
+          echo Boost binaries installed successfully
 
-      # 4. Download libtorrent source code (修正下载链接)
       - name: Download libtorrent source
         shell: powershell
         run: |
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
 
-          # 修正：使用用户指定的正确链接（基于环境变量拼接，确保版本匹配）
           $url = "https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing
           tar -xzf libtorrent.tar.gz
           Write-Host "libtorrent source downloaded and extracted successfully (URL: $url)"
 
-      # 5. Configure CMake
       - name: Configure CMake
         run: |
           set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
@@ -108,7 +95,6 @@ jobs:
           mkdir "%BUILD_DIR%" 2>nul
           cd /d "%BUILD_DIR%"
 
-          # CMake configuration with vcpkg toolchain
           cmake .. -G "Visual Studio 17 2022" -A x64 ^
           -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
           -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
@@ -126,48 +112,41 @@ jobs:
               echo CMake configuration failed!
               exit 1
           )
-          echo "CMake configured successfully"
+          echo CMake configured successfully
 
-      # 6. Build libtorrent
       - name: Build libtorrent
         run: |
           set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
           cd /d "%BUILD_DIR%"
 
-          # Auto find MSBuild
           for /f "usebackq tokens=*" %%i in (`vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do set MSBUILD=%%i
           if not defined MSBUILD (
               echo MSBuild not found!
               exit 1
           )
 
-          # Build Release version with multi-core
           "%MSBUILD%" libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /p:WholeProgramOptimization=true
 
           if %errorlevel% neq 0 (
               echo libtorrent build failed!
               exit 1
           )
-          echo "libtorrent built successfully"
+          echo libtorrent built successfully
 
-      # 7. Collect artifacts
       - name: Collect build artifacts
         run: |
           set DIST_DIR=%WORK_DIR%\dist
           mkdir "%DIST_DIR%\include" "%DIST_DIR%\lib" 2>nul
 
-          # Copy libtorrent headers and library
           xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include\"
           copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
 
-          # Copy Boost headers and libraries
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "%DIST_DIR%\include\"
           xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\lib" "%DIST_DIR%\lib\"
 
-          echo "Artifacts collected to: %DIST_DIR%"
+          echo Artifacts collected to: %DIST_DIR%
           dir "%DIST_DIR%\lib"
 
-      # 8. Upload artifacts
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
