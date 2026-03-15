@@ -19,77 +19,95 @@ jobs:
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      # 1. 下载vcpkg.exe + bundle配置 + 极简合规的vcpkg-configuration.json
-      - name: Setup complete vcpkg environment
+      # ===================== 1. 完整初始化vcpkg环境（exe+配置） =====================
+      - name: Setup vcpkg (exe + bundle config)
         shell: powershell
         run: |
-          # 创建vcpkg目录
+          # 1. 创建vcpkg目录并进入
           New-Item -Path $env:VCPKG_ROOT -ItemType Directory -Force | Out-Null
           Set-Location $env:VCPKG_ROOT
 
-          # 下载指定的vcpkg.exe
-          $vcpkgExeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
-          Invoke-WebRequest -Uri $vcpkgExeUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
-          Write-Host "✅ vcpkg.exe downloaded (size: $(Get-Item vcpkg.exe).Length / 1MB MB)"
+          # 2. 下载官方vcpkg.exe（你指定的版本）
+          $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg.exe"
+          Invoke-WebRequest -Uri $exeUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
+          if ((Get-Item vcpkg.exe).Length -lt 5MB) { throw "vcpkg.exe下载不完整" }
+          Write-Host "✅ vcpkg.exe下载完成（大小：$(Get-Item vcpkg.exe).Length / 1MB MB）"
 
-          # 下载bundle配置包
+          # 3. 下载bundle包补全配置（ports/triplets/scripts）
           $bundleUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/$env:VCPKG_VERSION/vcpkg-standalone-bundle.tar.gz"
-          Invoke-WebRequest -Uri $bundleUrl -OutFile vcpkg-bundle.tar.gz -UseBasicParsing -TimeoutSec 120
-          tar -xzf vcpkg-bundle.tar.gz
-          Remove-Item vcpkg-bundle.tar.gz -Force
+          Invoke-WebRequest -Uri $bundleUrl -OutFile bundle.tar.gz -UseBasicParsing -TimeoutSec 120
+          tar -xzf bundle.tar.gz
+          Remove-Item bundle.tar.gz -Force
+          Write-Host "✅ vcpkg配置文件补全完成"
 
-          # 终极简化：仅保留builtin-baseline（满足vcpkg 2026强制要求，无多余字段）
-          $vcpkgConfig = '{
+          # 4. 验证vcpkg基础功能
+          .\vcpkg.exe version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg环境初始化失败" }
+
+      # ===================== 2. 创建vcpkg.json（manifest文件，新版强制要求） =====================
+      - name: Create vcpkg.json (manifest, 新版vcpkg核心要求)
+        shell: powershell
+        run: |
+          Set-Location $env:VCPKG_ROOT
+          # 核心：vcpkg.json包含Boost依赖+builtin-baseline（满足新版基线要求）
+          $manifest = '{
+            "name": "libtorrent-build",
+            "version": "1.0.0",
+            "dependencies": [
+              { "name": "boost-asio", "triplet": "x64-windows-static" },
+              { "name": "boost-chrono", "triplet": "x64-windows-static" },
+              { "name": "boost-system", "triplet": "x64-windows-static" },
+              { "name": "boost-thread", "triplet": "x64-windows-static" },
+              { "name": "boost-random", "triplet": "x64-windows-static" },
+              { "name": "boost-regex", "triplet": "x64-windows-static" },
+              { "name": "boost-filesystem", "triplet": "x64-windows-static" }
+            ],
             "builtin-baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f"
           }'
-          $vcpkgConfig | Out-File -FilePath "vcpkg-configuration.json" -Encoding utf8
-          Write-Host "✅ vcpkg-configuration.json created (minimal & compliant)"
+          $manifest | Out-File -FilePath "vcpkg.json" -Encoding utf8
+          Write-Host "✅ vcpkg.json创建完成（符合新版vcpkg manifest规范）"
 
-          # 验证vcpkg配置解析
-          .\vcpkg.exe --debug version
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Error: vcpkg configuration parse failed!"
-              exit 1
-          }
-
-      # 2. 安装Boost二进制包（只读源，无任何错误）
-      - name: Install Boost (binary only, read-only source)
+      # ===================== 3. 安装Boost二进制包（通过manifest模式，无任何报错） =====================
+      - name: Install Boost (binary only, manifest模式)
         run: |
           cd /d "%VCPKG_ROOT%"
-          :: 只读二进制源，禁用统计，避免干扰
+          :: 关键：只读二进制源，禁止推送（解决405报错）
           set VCPKG_FEATURE_FLAGS=binaries
           set VCPKG_BINARY_SOURCES=clear;nuget,https://aka.ms/vcpkg-default-binarysource,read
           set VCPKG_DISABLE_METRICS=1
 
-          echo "=== Installing Boost x64-windows-static (binary) ==="
-          :: 直接安装，vcpkg已能识别包和triplet
-          .\vcpkg.exe install boost-asio:x64-windows-static boost-chrono:x64-windows-static boost-system:x64-windows-static boost-thread:x64-windows-static boost-random:x64-windows-static boost-regex:x64-windows-static boost-filesystem:x64-windows-static
+          echo "=== 开始安装Boost x64-windows-static（二进制） ==="
+          :: 通过manifest模式安装（新版vcpkg唯一合规方式）
+          .\vcpkg.exe install --x-manifest-root . --triplet x64-windows-static
 
           if %errorlevel% neq 0 (
-              echo Error: Boost install failed!
+              echo ❌ Boost安装失败！
               exit 1
           )
-          echo "✅ Boost binaries installed successfully!"
+          echo "✅ Boost二进制包安装完成"
 
-      # 3. 下载libtorrent源码（镜像源兜底）
+      # ===================== 4. 下载libtorrent源码 =====================
       - name: Download libtorrent source
         shell: powershell
         run: |
           New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
           Set-Location $env:WORK_DIR
-          
+
+          # 镜像源下载，避免GitHub直连问题
           $url = "https://ghproxy.com/https://github.com/arvidn/libtorrent/releases/download/v$env:LIBTORRENT_VERSION/libtorrent-rasterbar-$env:LIBTORRENT_VERSION.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile libtorrent.tar.gz -UseBasicParsing
           tar -xzf libtorrent.tar.gz
-          Write-Host "✅ Libtorrent source downloaded!"
+          Write-Host "✅ libtorrent源码下载并解压完成"
 
-      # 4. CMake配置（全功能静态库）
+      # ===================== 5. CMake配置（全功能静态库） =====================
       - name: Configure CMake
         run: |
           set SRC_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%
           set BUILD_DIR=%SRC_DIR%\build
-          mkdir "%BUILD_DIR%" && cd /d "%BUILD_DIR%"
-          
+          mkdir "%BUILD_DIR%" 2>nul
+          cd /d "%BUILD_DIR%"
+
+          :: CMake配置（指定vcpkg工具链+静态库triplet）
           cmake .. -G "Visual Studio 17 2022" -A x64 ^
           -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
           -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
@@ -103,11 +121,55 @@ jobs:
           -DTORRENT_USE_UPNP=ON ^
           -DTORRENT_USE_WEBSEEDS=ON
 
-      # 5. 编译libtorrent（自动找MSBuild）
+          if %errorlevel% neq 0 (
+              echo ❌ CMake配置失败！
+              exit 1
+          )
+          echo "✅ CMake配置完成"
+
+      # ===================== 6. 编译libtorrent =====================
       - name: Build libtorrent
         run: |
           set BUILD_DIR=%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build
           cd /d "%BUILD_DIR%"
-          
+
+          :: 自动查找MSBuild（兼容所有VS2022版本）
           for /f "usebackq tokens=*" %%i in (`vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe"`) do set MSBUILD=%%i
-          "%MSBUILD%" libtorrent.s
+          if not defined MSBUILD (
+              echo ❌ 未找到MSBuild！
+              exit 1
+          )
+
+          :: 多核编译Release版本
+          "%MSBUILD%" libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m /p:WholeProgramOptimization=true
+
+          if %errorlevel% neq 0 (
+              echo ❌ libtorrent编译失败！
+              exit 1
+          )
+          echo "✅ libtorrent编译完成"
+
+      # ===================== 7. 收集产物（开箱即用） =====================
+      - name: Collect artifacts
+        run: |
+          set DIST_DIR=%WORK_DIR%\dist
+          mkdir "%DIST_DIR%\include" "%DIST_DIR%\lib" 2>nul
+
+          :: 1. 复制libtorrent头文件+库
+          xcopy /E /I /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\include" "%DIST_DIR%\include\"
+          copy /Y "%WORK_DIR%\libtorrent-rasterbar-%LIBTORRENT_VERSION%\build\src\Release\libtorrent-rasterbar.lib" "%DIST_DIR%\lib\"
+
+          :: 2. 复制Boost头文件+库
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\include" "%DIST_DIR%\include\"
+          xcopy /E /I /Y "%VCPKG_ROOT%\installed\x64-windows-static\lib" "%DIST_DIR%\lib\"
+
+          echo "✅ 产物收集完成，目录：%DIST_DIR%"
+          dir "%DIST_DIR%\lib"
+
+      # ===================== 8. 上传产物 =====================
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtorrent-2.0.12-full-static-x64-windows
+          path: ${{ env.WORK_DIR }}\dist\
+          retention-days: 30
