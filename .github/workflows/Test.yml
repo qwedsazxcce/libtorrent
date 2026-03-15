@@ -32,7 +32,7 @@ jobs:
           .\vcpkg.exe version
           Write-Host "vcpkg initialized successfully"
 
-      - name: 2. Install Boost Dependencies (Classic Mode)
+      - name: 2. Install Boost (Full Package)
         shell: powershell
         run: |
           Set-Location $env:VCPKG_ROOT
@@ -41,21 +41,12 @@ jobs:
           $env:VCPKG_BINARY_SOURCES = "clear;nuget,https://aka.ms/vcpkg-default-binarysource,read"
           $env:VCPKG_DISABLE_METRICS = "1"
 
-          Write-Host "Installing Boost libraries..."
-          # 直接列出需要的库，带 triplet 后缀
-          $boostLibs = @(
-            "boost-asio", "boost-chrono", "boost-system", 
-            "boost-thread", "boost-random", "boost-regex", 
-            "boost-filesystem"
-          )
+          Write-Host "Installing complete Boost package (this may take a while)..."
+          # 修复：直接安装 boost 元包，包含所有子库，不再手动一个个列
+          & .\vcpkg.exe install "boost`:$env:VCPKG_TRIPLET"
           
-          foreach ($lib in $boostLibs) {
-            Write-Host "Installing $lib..."
-            & .\vcpkg.exe install "$lib`:$env:VCPKG_TRIPLET"
-            if ($LASTEXITCODE -ne 0) { throw "Failed to install $lib" }
-          }
-          
-          Write-Host "All Boost dependencies installed successfully"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to install Boost" }
+          Write-Host "Boost installed successfully"
 
       - name: 3. Download and Extract libtorrent Source
         shell: powershell
@@ -82,7 +73,6 @@ jobs:
           New-Item -Path $buildDir -ItemType Directory -Force | Out-Null
           Set-Location $buildDir
 
-          # 修复 CMP0167 警告：强制设置 CMake 策略，让 vcpkg 接管 Boost 查找
           $cmakeArgs = @(
             "..",
             "-G", "Visual Studio 17 2022",
@@ -90,6 +80,7 @@ jobs:
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
             "-DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET",
             "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_CXX_STANDARD=17",
             "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
             "-DBUILD_SHARED_LIBS=OFF",
             "-DTORRENT_BUILD_SHARED=OFF",
