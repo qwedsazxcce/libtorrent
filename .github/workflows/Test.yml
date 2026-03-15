@@ -46,7 +46,7 @@ jobs:
           Set-Location $env:VCPKG_ROOT
 
           # 下载指定兼容版本的vcpkg.exe（避免latest的兼容性坑）
-          $vcpkgUrl = "https://github.com/microsoft/vcpkg/releases/download/v$env:VCPKG_VERSION/vcpkg.exe"
+          $vcpkgUrl = "https://github.com/microsoft/vcpkg-tool/releases/download/v$env:VCPKG_VERSION/vcpkg.exe"
           Write-Host "=== Downloading vcpkg $env:VCPKG_VERSION from: $vcpkgUrl ==="
           Invoke-WebRequest -Uri $vcpkgUrl -OutFile vcpkg.exe -UseBasicParsing -TimeoutSec 60
 
