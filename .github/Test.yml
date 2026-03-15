@@ -1,0 +1,108 @@
+name: Build libtorrent-rasterbar 2.0.12 (Full Feature Static Library)
+
+on:
+  workflow_dispatch:  # 支持手动触发
+  push:
+    branches:
+      - main  # 推送到 main 分支时自动触发（可选）
+
+jobs:
+  build:
+    runs-on: windows-2022  # 使用 Windows Server 2022 环境（自带 VS2022 BuildTools）
+    defaults:
+      run:
+        shell: cmd  # 使用 CMD 执行命令（适配你的习惯）
+
+    steps:
+      - name: 显示环境信息
+        run: |
+          echo "=== 检查 CMake 版本 ==="
+          cmake --version
+          echo.
+          echo "=== 检查 MSBuild 版本 ==="
+          msbuild -version
+          echo.
+          echo "=== 当前工作目录 ==="
+          cd
+
+      - name: 创建工作目录并下载源码
+        run: |
+          :: 创建工作目录
+          mkdir D:\libtorrent-work
+          cd /d D:\libtorrent-work
+          
+          :: 下载 libtorrent-rasterbar-2.0.12 源码
+          echo "正在下载源码..."
+          powershell -Command "Invoke-WebRequest -Uri 'https://github.com/arvidn/libtorrent/releases/download/v2.0.12/libtorrent-rasterbar-2.0.12.tar.gz' -OutFile 'libtorrent.tar.gz'"
+          
+          :: 解压源码
+          echo "正在解压源码..."
+          tar -xzf libtorrent.tar.gz
+          
+          :: 显示解压后的目录结构
+          dir
+
+      - name: 配置 CMake（全功能静态库）
+        run: |
+          cd /d D:\libtorrent-work\libtorrent-rasterbar-2.0.12
+          
+          :: 创建构建目录
+          mkdir build
+          cd build
+          
+          :: CMake 配置（全功能，仅禁用测试和示例）
+          echo "正在配置 CMake..."
+          cmake .. -G "Visual Studio 17 2022" -A x64 ^
+          -DCMAKE_BUILD_TYPE=Release ^
+          -DBUILD_SHARED_LIBS=OFF ^
+          -DTORRENT_BUILD_SHARED=OFF ^
+          -DTORRENT_BUILD_TESTS=OFF ^
+          -DTORRENT_BUILD_EXAMPLES=OFF
+          
+          if %errorlevel% neq 0 (
+              echo CMake 配置失败！
+              exit /b 1
+          )
+          echo CMake 配置成功！
+
+      - name: 编译（Release x64）
+        run: |
+          cd /d D:\libtorrent-work\libtorrent-rasterbar-2.0.12\build
+          
+          echo "正在编译（多核加速）..."
+          msbuild libtorrent.sln /p:Configuration=Release /p:Platform=x64 /m
+          
+          if %errorlevel% neq 0 (
+              echo 编译失败！
+              exit /b 1
+          )
+          echo 编译成功！
+
+      - name: 收集编译产物
+        run: |
+          cd /d D:\libtorrent-work
+          
+          :: 创建产物目录
+          mkdir dist
+          mkdir dist\include
+          mkdir dist\lib
+          
+          :: 复制头文件
+          echo "正在复制头文件..."
+          xcopy /E /I /Y "libtorrent-rasterbar-2.0.12\include" "dist\include"
+          
+          :: 复制静态库文件
+          echo "正在复制库文件..."
+          copy /Y "libtorrent-rasterbar-2.0.12\build\src\Release\libtorrent-rasterbar.lib" "dist\lib\"
+          
+          :: 显示产物目录结构
+          echo.
+          echo "=== 产物目录结构 ==="
+          dir /s dist
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtorrent-rasterbar-2.0.12-full-static-x64
+          path: D:\libtorrent-work\dist\
+          retention-days: 30  # 产物保留 30 天
