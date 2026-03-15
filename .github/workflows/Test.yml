@@ -2,10 +2,9 @@ name: Build libtorrent-rasterbar 2.0.12 (Full Feature Static Library)
 
 on:
   push:
-    branches:
-      - main  # 仅在推送到 main 分支时触发
+    branches: ["main"]
     paths:
-      - '.github/workflows/Test.yml'  # 仅当这个文件变化时触发
+      - '.github/workflows/Test.yml'
   workflow_dispatch:  # 同时保留手动触发
 
 jobs:
