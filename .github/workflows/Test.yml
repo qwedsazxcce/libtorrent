@@ -19,7 +19,7 @@ jobs:
       VCPKG_VERSION: 2026-03-04
 
     steps:
-      # 1. 下载vcpkg.exe + bundle配置文件 + 配置baseline（解决新版vcpkg强制要求）
+      # 1. 下载vcpkg.exe + bundle配置 + 配置baseline（解决新版vcpkg强制要求）
       - name: Setup complete vcpkg environment
         shell: powershell
         run: |
@@ -38,24 +38,22 @@ jobs:
           tar -xzf vcpkg-bundle.tar.gz
           Remove-Item vcpkg-bundle.tar.gz -Force
 
-          # 核心：创建vcpkg-configuration.json，指定官方注册表和baseline（解决新版强制要求）
-          $vcpkgConfig = @"
-{
-  "registries": [
-    {
-      "kind": "builtin-baseline",
-      "baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f",
-      "repository": "https://github.com/microsoft/vcpkg"
-    },
-    {
-      "kind": "registry",
-      "name": "microsoft",
-      "location": "https://github.com/microsoft/vcpkg-registry",
-      "baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f"
-    }
-  ]
-}
-"@
+          # 核心：创建vcpkg-configuration.json（修正YAML多行字符串语法）
+          $vcpkgConfig = '{
+            "registries": [
+              {
+                "kind": "builtin-baseline",
+                "baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f",
+                "repository": "https://github.com/microsoft/vcpkg"
+              },
+              {
+                "kind": "registry",
+                "name": "microsoft",
+                "location": "https://github.com/microsoft/vcpkg-registry",
+                "baseline": "7e74653e3f7b123e9e9b224d99e49f0936268c8f"
+              }
+            ]
+          }'
           $vcpkgConfig | Out-File -FilePath "vcpkg-configuration.json" -Encoding utf8
           Write-Host "✅ vcpkg-configuration.json created (fixed baseline requirement)"
 
