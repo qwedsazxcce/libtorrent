@@ -1,4 +1,4 @@
-name: Build OpenSSL 3.6.1 (Full Feature Static Library)
+name: Build OpenSSL 3.6.1 (Static + Dynamic Libraries)
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
         with:
           path: |
             ${{ env.WORK_DIR }}\openssl-${{ env.OPENSSL_VERSION }}
-          key: openssl-build-${{ env.OPENSSL_VERSION }}-x64-windows-static
+          key: openssl-build-${{ env.OPENSSL_VERSION }}-x64-windows-mixed
 
       - name: 1. Setup Build Dependencies (Perl + NASM)
         shell: powershell
@@ -67,7 +67,7 @@ jobs:
             Write-Host "Source already exists, skipping download."
           }
 
-      - name: 3. Configure OpenSSL (Static Library, No Shared)
+      - name: 3. Configure OpenSSL (Static + Dynamic)
         if: steps.cache-build.outputs.cache-hit != 'true'
         shell: cmd
         run: |
@@ -77,7 +77,7 @@ jobs:
           set "PATH=%NASM_PATH%;%PATH%"
           
           cd /d "%WORK_DIR%\openssl-%OPENSSL_VERSION%"
-          perl Configure VC-WIN64A no-shared no-tests --prefix="%INSTALL_DIR%" --openssldir="%INSTALL_DIR%\ssl"
+          perl Configure VC-WIN64A no-tests --prefix="%INSTALL_DIR%" --openssldir="%INSTALL_DIR%\ssl"
           if errorlevel 1 exit /b 1
 
       - name: 4. Build OpenSSL
@@ -98,14 +98,15 @@ jobs:
         shell: powershell
         run: |
           $distDir = "$env:WORK_DIR\dist-final"
-          New-Item -Path "$distDir\include", "$distDir\lib" -ItemType Directory -Force | Out-Null
+          New-Item -Path "$distDir\include", "$distDir\lib", "$distDir\bin" -ItemType Directory -Force | Out-Null
           Copy-Item -Path "$env:INSTALL_DIR\include\*" -Destination "$distDir\include\" -Recurse -Force
-          Copy-Item -Path "$env:INSTALL_DIR\lib\*.lib" -Destination "$distDir\lib\" -Force
+          Copy-Item -Path "$env:INSTALL_DIR\lib\*" -Destination "$distDir\lib\" -Recurse -Force
+          Copy-Item -Path "$env:INSTALL_DIR\bin\*" -Destination "$distDir\bin\" -Recurse -Force
           Write-Host "Final OpenSSL SDK ready at: $distDir"
 
       - name: Upload Final Package
         uses: actions/upload-artifact@v4
         with:
-          name: openssl-3.6.1-static-sdk
+          name: openssl-3.6.1-full-sdk
           path: ${{ env.WORK_DIR }}\dist-final\
           retention-days: 30
