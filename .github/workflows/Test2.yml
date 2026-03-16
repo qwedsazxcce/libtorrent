@@ -1,0 +1,107 @@
+name: Build OpenSSL 3.6.1 (Full Feature Static Library)
+
+on:
+  push:
+    branches: [ RC_2_0 ]
+    paths: ['.github/workflows/Test2.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      OPENSSL_VERSION: 3.6.1
+      WORK_DIR: ${{ github.workspace }}\build-workspace
+      INSTALL_DIR: ${{ github.workspace }}\openssl-install
+
+    steps:
+      - name: 0. Restore Build Directory from Cache
+        uses: actions/cache@v4
+        id: cache-build
+        with:
+          path: |
+            ${{ env.WORK_DIR }}\openssl-${{ env.OPENSSL_VERSION }}
+          key: openssl-build-${{ env.OPENSSL_VERSION }}-x64-windows-static
+
+      - name: 1. Setup Build Dependencies (Perl + NASM)
+        shell: powershell
+        run: |
+          Write-Host "Checking/Installing Perl (Strawberry Perl)..."
+          # 强制安装，确保路径正确（即使已安装也刷新）
+          choco install strawberryperl -y --no-progress --force
+          
+          Write-Host "Checking/Installing NASM..."
+          choco install nasm -y --no-progress
+          
+          Write-Host "Refreshing environment variables..."
+          # 关键修复：强制从系统和用户环境变量重新加载 PATH
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          # 额外保险：显式添加常见的 NASM 安装路径
+          $nasmPath = "C:\Program Files\NASM"
+          if (Test-Path $nasmPath) {
+              $env:Path += ";$nasmPath"
+          }
+          
+          # 验证依赖
+          Write-Host "=== Perl version ==="
+          perl -v
+          Write-Host "=== NASM version ==="
+          nasm -v
+          
+          if ($LASTEXITCODE -ne 0) { throw "NASM not found in PATH after installation" }
+
+      - name: 2. Download and Extract OpenSSL Source
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          New-Item -Path $env:WORK_DIR -ItemType Directory -Force | Out-Null
+          Set-Location $env:WORK_DIR
+          
+          $fileName = "openssl-$env:OPENSSL_VERSION.tar.gz"
+          $url = "https://github.com/openssl/openssl/releases/download/openssl-$env:OPENSSL_VERSION/$fileName"
+          
+          if (-not (Test-Path $fileName)) {
+            Write-Host "Downloading OpenSSL $env:OPENSSL_VERSION source..."
+            Invoke-WebRequest -Uri $url -OutFile $fileName -UseBasicParsing
+            tar -xzf $fileName
+          } else {
+            Write-Host "Source already exists, skipping download."
+          }
+
+      - name: 3. Configure OpenSSL (Static Library, No Shared)
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          @echo off
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd /d "%WORK_DIR%\openssl-%OPENSSL_VERSION%"
+          perl Configure VC-WIN64A no-shared no-tests --prefix="%INSTALL_DIR%" --openssldir="%INSTALL_DIR%\ssl"
+          if errorlevel 1 exit /b 1
+
+      - name: 4. Build OpenSSL
+        shell: cmd
+        run: |
+          @echo off
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd /d "%WORK_DIR%\openssl-%OPENSSL_VERSION%"
+          nmake /f makefile
+          if errorlevel 1 exit /b 1
+          nmake /f makefile install_sw
+          if errorlevel 1 exit /b 1
+
+      - name: 5. Collect and Upload Final Artifact
+        shell: powershell
+        run: |
+          $distDir = "$env:WORK_DIR\dist-final"
+          New-Item -Path "$distDir\include", "$distDir\lib" -ItemType Directory -Force | Out-Null
+          Copy-Item -Path "$env:INSTALL_DIR\include\*" -Destination "$distDir\include\" -Recurse -Force
+          Copy-Item -Path "$env:INSTALL_DIR\lib\*.lib" -Destination "$distDir\lib\" -Force
+          Write-Host "Final OpenSSL SDK ready at: $distDir"
+
+      - name: Upload Final Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: openssl-3.6.1-static-sdk
+          path: ${{ env.WORK_DIR }}\dist-final\
+          retention-days: 30
