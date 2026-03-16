@@ -27,29 +27,27 @@ jobs:
         shell: powershell
         run: |
           Write-Host "Checking/Installing Perl (Strawberry Perl)..."
-          # 强制安装，确保路径正确（即使已安装也刷新）
           choco install strawberryperl -y --no-progress --force
           
           Write-Host "Checking/Installing NASM..."
           choco install nasm -y --no-progress
           
           Write-Host "Refreshing environment variables..."
-          # 关键修复：强制从系统和用户环境变量重新加载 PATH
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
-          # 额外保险：显式添加常见的 NASM 安装路径
           $nasmPath = "C:\Program Files\NASM"
           if (Test-Path $nasmPath) {
               $env:Path += ";$nasmPath"
           }
           
-          # 验证依赖
           Write-Host "=== Perl version ==="
           perl -v
           Write-Host "=== NASM version ==="
           nasm -v
           
           if ($LASTEXITCODE -ne 0) { throw "NASM not found in PATH after installation" }
+          
+          Add-Content -Path $env:GITHUB_ENV -Value "NASM_PATH=$nasmPath"
 
       - name: 2. Download and Extract OpenSSL Source
         if: steps.cache-build.outputs.cache-hit != 'true'
@@ -75,6 +73,9 @@ jobs:
         run: |
           @echo off
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          
+          set "PATH=%NASM_PATH%;%PATH%"
+          
           cd /d "%WORK_DIR%\openssl-%OPENSSL_VERSION%"
           perl Configure VC-WIN64A no-shared no-tests --prefix="%INSTALL_DIR%" --openssldir="%INSTALL_DIR%\ssl"
           if errorlevel 1 exit /b 1
@@ -84,6 +85,9 @@ jobs:
         run: |
           @echo off
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          
+          set "PATH=%NASM_PATH%;%PATH%"
+          
           cd /d "%WORK_DIR%\openssl-%OPENSSL_VERSION%"
           nmake /f makefile
           if errorlevel 1 exit /b 1
